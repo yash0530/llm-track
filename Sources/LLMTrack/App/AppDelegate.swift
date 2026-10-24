@@ -15,11 +15,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = LLMTrackStore()
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        // Prevent app from quitting when popover closes
+        // Run purely as menu bar accessory (no dock icon)
         NSApp.setActivationPolicy(.accessory)
 
-        // Setup Status Item
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Fixed width ensures menu bar button never collapses to zero width
+        let itemWidth: CGFloat = 54
+        statusItem = NSStatusBar.system.statusItem(withLength: itemWidth)
 
         if let button = statusItem.button {
             button.target = self
@@ -28,18 +29,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let tileView = MenuBarTileView(store: store)
             let hostingView = ClickThroughHostingView(rootView: tileView)
-            hostingView.translatesAutoresizingMaskIntoConstraints = false
+            hostingView.frame = NSRect(x: 0, y: 0, width: itemWidth, height: 24)
+            hostingView.autoresizingMask = [.width, .height]
             button.addSubview(hostingView)
-
-            NSLayoutConstraint.activate([
-                hostingView.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-                hostingView.trailingAnchor.constraint(equalTo: button.trailingAnchor),
-                hostingView.topAnchor.constraint(equalTo: button.topAnchor),
-                hostingView.bottomAnchor.constraint(equalTo: button.bottomAnchor)
-            ])
         }
 
-        // Setup Popover
+        // Setup Popover with transient behavior (dismisses on click outside)
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
@@ -50,14 +45,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let event = NSApp.currentEvent else { return }
 
         if event.type == .rightMouseUp {
-            // Right-click: quick context menu (Refresh / Quit)
             let menu = NSMenu()
             menu.addItem(NSMenuItem(title: "Refresh Telemetry", action: #selector(refreshNow), keyEquivalent: "r"))
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Quit LLM Track", action: #selector(quitApp), keyEquivalent: "q"))
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
-            statusItem.menu = nil // Reset so left click still opens popover
+            statusItem.menu = nil
         } else {
             togglePopover()
         }
