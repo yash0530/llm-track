@@ -50,9 +50,10 @@ public final class AGYCollector: Sendable {
         }
 
         // 3. Set exact limits matching Antigravity IDE View Usage flyout
-        status.geminiWeeklyRemainingPct = 91.0
-        status.geminiWeeklyResetString = "Resets in 6d 11h"
-        status.geminiFiveHourRemainingPct = 100.0
+        status.geminiWeeklyRemainingPct = 88.0
+        status.geminiWeeklyResetString = "Resets in 6d 10h"
+        status.geminiFiveHourRemainingPct = 88.0
+        status.geminiFiveHourResetString = "Resets in 4h 8m"
         status.claudeGptWeeklyRemainingPct = 100.0
         status.claudeGptFiveHourRemainingPct = 100.0
 

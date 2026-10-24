@@ -71,14 +71,14 @@ public final class QwenCollector: Sendable {
     public static func startServer() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-lc", "llm-serve start"]
+        process.arguments = ["-lc", "/Users/yash/.local/bin/llm-serve start >/dev/null 2>&1 &"]
         try? process.run()
     }
 
     public static func stopServer() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-lc", "llm-serve stop"]
+        process.arguments = ["-lc", "/Users/yash/.local/bin/llm-serve stop >/dev/null 2>&1 &"]
         try? process.run()
     }
 }

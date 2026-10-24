@@ -16,7 +16,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let button = statusItem.button {
             let symbolConfig = NSImage.SymbolConfiguration(pointSize: 14.0, weight: .regular)
-            if let image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "LLM Track")?.withSymbolConfiguration(symbolConfig) {
+            if let image = NSImage(systemSymbolName: "cpu", accessibilityDescription: "LLM Track")?.withSymbolConfiguration(symbolConfig) {
                 image.isTemplate = true
                 button.image = image
             }

@@ -53,12 +53,9 @@ public struct PopoverHUDView: View {
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundColor(.primary.opacity(0.92))
                         Spacer()
-                        Text(store.telemetry.claude.model)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary.opacity(0.70))
                     }
 
-                    // Session Limit
+                    // Session Limit (5-Hour)
                     PrecisionProgressBar(
                         label: "Session",
                         remainingPercent: store.telemetry.claude.fiveHourRemainingPct ?? 0,
@@ -90,7 +87,7 @@ public struct PopoverHUDView: View {
                 }
             }
 
-            // 2. Antigravity Card
+            // 2. Antigravity Card (Consistent ordering: 5-Hour above Weekly)
             LiquidGlassCard {
                 VStack(spacing: 5.5) {
                     HStack {
@@ -99,10 +96,15 @@ public struct PopoverHUDView: View {
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundColor(.primary.opacity(0.92))
                         Spacer()
-                        Text(store.telemetry.agy.model)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary.opacity(0.70))
                     }
+
+                    // 5-Hour Limit Bar
+                    PrecisionProgressBar(
+                        label: "5-Hour",
+                        remainingPercent: store.telemetry.agy.geminiFiveHourRemainingPct,
+                        resetText: store.telemetry.agy.geminiFiveHourResetString,
+                        baseTint: Color(red: 0.25, green: 0.60, blue: 1.00)
+                    )
 
                     // Weekly Limit Bar
                     PrecisionProgressBar(
@@ -110,14 +112,6 @@ public struct PopoverHUDView: View {
                         remainingPercent: store.telemetry.agy.geminiWeeklyRemainingPct,
                         resetText: store.telemetry.agy.geminiWeeklyResetString,
                         baseTint: Color(red: 0.18, green: 0.75, blue: 0.95)
-                    )
-
-                    // 5-Hour Limit Bar
-                    PrecisionProgressBar(
-                        label: "5-Hour",
-                        remainingPercent: store.telemetry.agy.geminiFiveHourRemainingPct,
-                        resetText: nil,
-                        baseTint: Color(red: 0.25, green: 0.60, blue: 1.00)
                     )
                 }
             }
@@ -131,9 +125,6 @@ public struct PopoverHUDView: View {
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundColor(.primary.opacity(0.92))
                         Spacer()
-                        Text(store.telemetry.kiro.model)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary.opacity(0.70))
                     }
 
                     // Monthly Bar
@@ -146,14 +137,34 @@ public struct PopoverHUDView: View {
                 }
             }
 
-            // 4. Qwen 27B Card (Ultra-clean single row)
+            // 4. Qwen 27B Card (With On/Off toggle using llm-serve)
             LiquidGlassCard {
                 HStack {
                     StatusDot(isRunning: store.telemetry.qwen.isServerRunning)
                     Text("Qwen 27B")
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundColor(.primary.opacity(0.92))
+
                     Spacer()
+
+                    Button(action: {
+                        store.toggleQwenServer()
+                    }) {
+                        Text(store.telemetry.qwen.isServerRunning ? "Off" : "On")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(store.telemetry.qwen.isServerRunning ? Color(red: 0.92, green: 0.35, blue: 0.32) : Color(red: 0.20, green: 0.84, blue: 0.45))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 2.5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Color.primary.opacity(0.06))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
                 .padding(.vertical, 1)
             }
