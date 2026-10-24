@@ -28,10 +28,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup Popover with transient behavior (dismisses on click outside)
         popover = NSPopover()
         popover.behavior = .transient
-        popover.animates = false
-        popover.contentSize = NSSize(width: 336, height: 285)
+        popover.animates = true
+        popover.contentSize = NSSize(width: 336, height: 360)
         let hostingController = NSHostingController(rootView: PopoverHUDView(store: store))
-        hostingController.preferredContentSize = NSSize(width: 336, height: 285)
+        hostingController.preferredContentSize = NSSize(width: 336, height: 360)
         popover.contentViewController = hostingController
     }
 
@@ -57,6 +57,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

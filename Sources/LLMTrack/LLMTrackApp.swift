@@ -1,5 +1,6 @@
 import Cocoa
 import Foundation
+import SwiftUI
 
 @main
 struct LLMTrackApp {
