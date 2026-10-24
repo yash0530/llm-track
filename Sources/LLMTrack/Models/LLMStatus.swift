@@ -25,12 +25,13 @@ public struct ClaudeStatus: Sendable, Equatable {
     public var sevenDayUsedPct: Double?
     public var sevenDayRemainingPct: Double?
     public var remainingDollars: Double?
+    public var lifetimeMessages: Int?
     public var lastUpdated: Date?
 
     public var resetsInString: String? {
         guard let resetsAt = fiveHourResetsAt else { return nil }
         let diff = resetsAt.timeIntervalSince(Date())
-        if diff <= 0 { return "Resetting now" }
+        if diff <= 0 { return "Resetting" }
         let hours = Int(diff) / 3600
         let minutes = (Int(diff) % 3600) / 60
         if hours > 0 {
@@ -42,13 +43,14 @@ public struct ClaudeStatus: Sendable, Equatable {
 
     public init(
         process: AgentProcessInfo = AgentProcessInfo(),
-        model: String = "Opus 4.5",
+        model: String = "Claude Opus",
         fiveHourUsedPct: Double? = nil,
         fiveHourRemainingPct: Double? = nil,
         fiveHourResetsAt: Date? = nil,
         sevenDayUsedPct: Double? = nil,
         sevenDayRemainingPct: Double? = nil,
         remainingDollars: Double? = nil,
+        lifetimeMessages: Int? = nil,
         lastUpdated: Date? = nil
     ) {
         self.process = process
@@ -59,6 +61,7 @@ public struct ClaudeStatus: Sendable, Equatable {
         self.sevenDayUsedPct = sevenDayUsedPct
         self.sevenDayRemainingPct = sevenDayRemainingPct
         self.remainingDollars = remainingDollars
+        self.lifetimeMessages = lifetimeMessages
         self.lastUpdated = lastUpdated
     }
 }
@@ -68,31 +71,45 @@ public struct AGYStatus: Sendable, Equatable {
     public var model: String
     public var account: String?
     public var activeDirectory: String?
+    public var contextTokens: Int?
+    public var maxContextTokens: Int
     public var contextUsedPct: Double?
     public var contextRemainingPct: Double?
-    public var dailyRequestsUsedPct: Double?
-    public var dailyRequestsRemainingPct: Double?
+    public var sessionSteps: Int?
     public var isLanguageServerRunning: Bool
+
+    public var contextTokensFormatted: String? {
+        guard let tokens = contextTokens else { return nil }
+        if tokens >= 1_000_000 {
+            return String(format: "%.1fM", Double(tokens) / 1_000_000.0)
+        } else if tokens >= 1_000 {
+            return String(format: "%.1fk", Double(tokens) / 1_000.0)
+        } else {
+            return "\(tokens)"
+        }
+    }
 
     public init(
         process: AgentProcessInfo = AgentProcessInfo(),
         model: String = "Gemini 3.8 Flash High",
         account: String? = nil,
         activeDirectory: String? = nil,
+        contextTokens: Int? = nil,
+        maxContextTokens: Int = 1_000_000,
         contextUsedPct: Double? = nil,
         contextRemainingPct: Double? = nil,
-        dailyRequestsUsedPct: Double? = nil,
-        dailyRequestsRemainingPct: Double? = nil,
+        sessionSteps: Int? = nil,
         isLanguageServerRunning: Bool = false
     ) {
         self.process = process
         self.model = model
         self.account = account
         self.activeDirectory = activeDirectory
+        self.contextTokens = contextTokens
+        self.maxContextTokens = maxContextTokens
         self.contextUsedPct = contextUsedPct
         self.contextRemainingPct = contextRemainingPct
-        self.dailyRequestsUsedPct = dailyRequestsUsedPct
-        self.dailyRequestsRemainingPct = dailyRequestsRemainingPct
+        self.sessionSteps = sessionSteps
         self.isLanguageServerRunning = isLanguageServerRunning
     }
 }

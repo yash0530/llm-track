@@ -37,13 +37,12 @@ public final class AGYCollector: Sendable {
                 status.activeDirectory = URL(fileURLWithPath: dirPath).lastPathComponent
             }
         } else if hasLangServer {
-            // IDE or helper running in background
             status.process = AgentProcessInfo(isRunning: true, pid: nil, cpuPercent: nil, command: "Antigravity IDE")
         } else {
             status.process = AgentProcessInfo(isRunning: false)
         }
 
-        // 2. Google Account
+        // 2. Google Account from ~/.gemini/google_accounts.json
         let home = FileManager.default.homeDirectoryForCurrentUser
         let accountsURL = home.appendingPathComponent(".gemini/google_accounts.json")
         if let data = try? Data(contentsOf: accountsURL),
@@ -52,7 +51,7 @@ public final class AGYCollector: Sendable {
             status.account = active
         }
 
-        // 3. Fast quota & context window check from recent conversation transcripts
+        // 3. Extract 100% authentic live token telemetry from recent conversation transcript
         let brainURL = home.appendingPathComponent(".gemini/antigravity/brain")
         if let subdirs = try? FileManager.default.contentsOfDirectory(at: brainURL, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) {
             let sorted = subdirs.sorted { u1, u2 in
@@ -61,36 +60,46 @@ public final class AGYCollector: Sendable {
                 return d1 > d2
             }
 
-            var latestSteps = 0
             for dir in sorted.prefix(3) {
                 let transcriptURL = dir.appendingPathComponent(".system_generated/logs/transcript.jsonl")
-                if let content = try? String(contentsOf: transcriptURL, encoding: .utf8) {
-                    let steps = content.components(separatedBy: .newlines).filter { !$0.isEmpty }.count
-                    if steps > 0 {
-                        latestSteps = steps
+                guard FileManager.default.fileExists(atPath: transcriptURL.path),
+                      let fileContent = try? String(contentsOf: transcriptURL, encoding: .utf8) else {
+                    continue
+                }
+
+                let lines = fileContent.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                guard !lines.isEmpty else { continue }
+
+                status.sessionSteps = lines.count
+
+                // Inspect lines from the end to find the most recent token metrics
+                for line in lines.reversed() {
+                    guard let data = line.data(using: .utf8),
+                          let stepJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        continue
+                    }
+
+                    let input = stepJson["input_tokens"] as? Int ?? 0
+                    let cache = stepJson["cache_read_tokens"] as? Int ?? 0
+
+                    if input > 0 || cache > 0 {
+                        let totalTokens = input + cache
+                        status.contextTokens = totalTokens
+                        status.maxContextTokens = 1_000_000
+
+                        let pctUsed = (Double(totalTokens) / 1_000_000.0) * 100.0
+                        let roundedUsed = (pctUsed * 10).rounded() / 10
+                        status.contextUsedPct = roundedUsed
+                        status.contextRemainingPct = max(0, 100.0 - roundedUsed)
                         break
                     }
                 }
-            }
 
-            if latestSteps > 0 {
-                // Estimate ~1.5k tokens per step in 1M token window (Gemini 3.8 / 1.5)
-                let estTokens = Double(latestSteps) * 1500.0
-                let pctUsed = min(99.0, max(5.0, (estTokens / 1_000_000.0) * 100.0))
-                status.contextUsedPct = (pctUsed * 10).rounded() / 10
-                status.contextRemainingPct = 100.0 - (status.contextUsedPct ?? 0)
-            } else {
-                status.contextUsedPct = 18.0
-                status.contextRemainingPct = 82.0
+                if status.contextTokens != nil {
+                    break
+                }
             }
-        } else {
-            status.contextUsedPct = 18.0
-            status.contextRemainingPct = 82.0
         }
-
-        // Daily tier capacity remaining
-        status.dailyRequestsRemainingPct = 65.0
-        status.dailyRequestsUsedPct = 35.0
 
         return status
     }
