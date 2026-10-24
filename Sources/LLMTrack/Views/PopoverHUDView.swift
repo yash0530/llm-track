@@ -144,11 +144,11 @@ public struct PopoverHUDView: View {
                 }
             }
 
-            // 4. Qwen 27B Card (With On/Off toggle using llm-serve)
+            // 4. Qwen 3.8 27B Card (With On/Off toggle using llm-serve)
             LiquidGlassCard {
                 HStack {
                     StatusDot(isRunning: store.telemetry.qwen.isServerRunning)
-                    Text("Qwen 27B")
+                    Text("Qwen 3.8 27B")
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundColor(.primary.opacity(0.92))
 
@@ -157,9 +157,9 @@ public struct PopoverHUDView: View {
                     Button(action: {
                         store.toggleQwenServer()
                     }) {
-                        Text(store.telemetry.qwen.isServerRunning ? "Off" : "On")
+                        Text(store.qwenButtonTitle)
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(store.telemetry.qwen.isServerRunning ? Color(red: 0.92, green: 0.35, blue: 0.32) : Color(red: 0.20, green: 0.84, blue: 0.45))
+                            .foregroundColor(store.qwenButtonColor)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 2.5)
                             .background(
@@ -172,6 +172,7 @@ public struct PopoverHUDView: View {
                             )
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .disabled(store.qwenTransitionState != .idle)
                 }
                 .padding(.vertical, 1)
             }

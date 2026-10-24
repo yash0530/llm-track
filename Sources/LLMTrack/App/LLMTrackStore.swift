@@ -2,10 +2,17 @@ import Foundation
 import SwiftUI
 import Combine
 
+public enum QwenTransitionState: Sendable, Equatable {
+    case idle
+    case turningOn
+    case turningOff
+}
+
 @MainActor
 public final class LLMTrackStore: ObservableObject {
     @Published public var telemetry: LLMOverallTelemetry
     @Published public var isRefreshing: Bool = false
+    @Published public var qwenTransitionState: QwenTransitionState = .idle
 
     private let claudeCollector = ClaudeCollector()
     private let agyCollector = AGYCollector()
@@ -66,17 +73,57 @@ public final class LLMTrackStore: ObservableObject {
         }
     }
 
+    public var qwenButtonTitle: String {
+        switch qwenTransitionState {
+        case .turningOn:
+            return "Turning on..."
+        case .turningOff:
+            return "Turning off..."
+        case .idle:
+            return telemetry.qwen.isServerRunning ? "Off" : "On"
+        }
+    }
+
+    public var qwenButtonColor: Color {
+        switch qwenTransitionState {
+        case .turningOn, .turningOff:
+            return Color.secondary.opacity(0.70)
+        case .idle:
+            return telemetry.qwen.isServerRunning
+                ? Color(red: 0.92, green: 0.35, blue: 0.32)
+                : Color(red: 0.20, green: 0.84, blue: 0.45)
+        }
+    }
+
     public func toggleQwenServer() {
-        if telemetry.qwen.isServerRunning {
-            QwenCollector.stopServer()
-        } else {
-            QwenCollector.startServer()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            self?.refresh(force: true)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            self?.refresh(force: true)
+        guard qwenTransitionState == .idle else { return }
+
+        let willStart = !telemetry.qwen.isServerRunning
+        qwenTransitionState = willStart ? .turningOn : .turningOff
+
+        Task.detached(priority: .userInitiated) { [weak self, qwenCollector] in
+            if willStart {
+                QwenCollector.startServerSync()
+            } else {
+                QwenCollector.stopServerSync()
+            }
+
+            // Verify with retries (polling every 500ms for up to 4s)
+            var newStatus = qwenCollector.collect()
+            let expectedRunning = willStart
+            for _ in 0..<8 {
+                if newStatus.isServerRunning == expectedRunning {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                newStatus = qwenCollector.collect()
+            }
+
+            let finalStatus = newStatus
+            await MainActor.run { [weak self] in
+                self?.telemetry.qwen = finalStatus
+                self?.qwenTransitionState = .idle
+            }
         }
     }
 }

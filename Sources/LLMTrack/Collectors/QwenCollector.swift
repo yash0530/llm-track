@@ -24,14 +24,13 @@ public final class QwenCollector: Sendable {
             "splash serve-native",
             "server.server",
             "Qwen3.8-27B",
-            "llm-proxy.mjs",
-            "LM Studio --run-as-service"
+            "llm-proxy.mjs"
         ])
         let hasProcessRunning = !matches.isEmpty
 
         let isRunning = is8089Open || is8790Open || is1234Open || hasServerPidRunning || hasProxyPidRunning || hasProcessRunning
         status.isServerRunning = isRunning
-        status.modelName = "Qwen 27B"
+        status.modelName = "Qwen 3.8 27B"
         status.serverPort = is8089Open ? 8089 : (is1234Open ? 1234 : 8790)
 
         return status
@@ -68,17 +67,27 @@ public final class QwenCollector: Sendable {
         return kill(pid, 0) == 0
     }
 
-    public static func startServer() {
+    public static func startServerSync() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-lc", "/Users/yash/.local/bin/llm-serve start >/dev/null 2>&1 &"]
+        process.arguments = ["-lc", "export PATH=\"$HOME/.local/bin:$HOME/.lmstudio/bin:$PATH\"; /Users/yash/.local/bin/llm-serve start >/tmp/llm_serve_start.log 2>&1"]
         try? process.run()
+        process.waitUntilExit()
+    }
+
+    public static func stopServerSync() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-lc", "export PATH=\"$HOME/.local/bin:$HOME/.lmstudio/bin:$PATH\"; /Users/yash/.local/bin/llm-serve stop >/tmp/llm_serve_stop.log 2>&1"]
+        try? process.run()
+        process.waitUntilExit()
+    }
+
+    public static func startServer() {
+        startServerSync()
     }
 
     public static func stopServer() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-lc", "/Users/yash/.local/bin/llm-serve stop >/dev/null 2>&1 &"]
-        try? process.run()
+        stopServerSync()
     }
 }
