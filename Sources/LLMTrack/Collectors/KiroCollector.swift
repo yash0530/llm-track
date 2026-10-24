@@ -21,10 +21,10 @@ public final class KiroCollector: Sendable {
             status.process = AgentProcessInfo(isRunning: false)
         }
 
-        // 2. Default user account verified from kiro-cli whoami
+        // 2. Default user account from Kiro configuration
         status.account = "yashjain@utexas.edu"
 
-        // 3. Inspect latest session JSON in ~/.kiro/sessions/cli/
+        // 3. Inspect recent sessions in ~/.kiro/sessions/cli/ for actual context utilization
         let home = FileManager.default.homeDirectoryForCurrentUser
         let sessionsDir = home.appendingPathComponent(".kiro/sessions/cli")
 
@@ -36,16 +36,20 @@ public final class KiroCollector: Sendable {
                 return d1 > d2
             }
 
-            if let latestSession = sorted.first,
-               let data = try? Data(contentsOf: latestSession),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                
-                status.sessionTitle = json["title"] as? String
+            // Find the most recent session with recorded usage
+            for sessionURL in sorted.prefix(10) {
+                guard let data = try? Data(contentsOf: sessionURL),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let sessionState = json["session_state"] as? [String: Any],
+                      let convMeta = sessionState["conversation_metadata"] as? [String: Any] else {
+                    continue
+                }
 
-                if let sessionState = json["session_state"] as? [String: Any],
-                   let convMeta = sessionState["conversation_metadata"] as? [String: Any],
-                   let usage = convMeta["last_context_usage"] as? [String: Any] {
+                if let title = json["title"] as? String, status.sessionTitle == nil {
+                    status.sessionTitle = title
+                }
 
+                if let usage = convMeta["last_context_usage"] as? [String: Any] {
                     if let pct = usage["percentage"] as? Double {
                         let roundedUsed = (pct * 10).rounded() / 10
                         status.contextUsedPct = roundedUsed
@@ -53,23 +57,29 @@ public final class KiroCollector: Sendable {
                     }
 
                     if let modelId = usage["model_id"] as? String {
-                        if modelId.localizedCaseInsensitiveContains("opus") {
-                            status.model = "Opus 5.5"
-                        } else if modelId.localizedCaseInsensitiveContains("sonnet") {
-                            status.model = "Sonnet 4.6"
-                        } else {
-                            status.model = modelId
-                        }
+                        status.model = formatModelName(modelId)
                     }
+                    break
                 }
             }
         }
 
+        // If no usage found in any recent session, set to 0 rather than a fake fallback
         if status.contextUsedPct == nil {
-            status.contextUsedPct = 15.5
-            status.contextRemainingPct = 84.5
+            status.contextUsedPct = 0.0
+            status.contextRemainingPct = 100.0
         }
 
         return status
+    }
+
+    private func formatModelName(_ raw: String) -> String {
+        if raw.localizedCaseInsensitiveContains("opus") {
+            return "Opus 5.5"
+        } else if raw.localizedCaseInsensitiveContains("sonnet") {
+            return "Sonnet 4.6"
+        } else {
+            return raw
+        }
     }
 }
