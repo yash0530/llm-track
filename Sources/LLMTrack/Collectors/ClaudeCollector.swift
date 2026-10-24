@@ -8,7 +8,6 @@ public final class ClaudeCollector: Sendable {
 
         // 1. Process telemetry
         let matches = ProcessHelper.findProcesses(matching: ["claude "])
-        // Filter out daemon or helper if an actual CLI session is present
         let primaryProcess = matches.first { $0.command.hasPrefix("claude ") || $0.command.contains("/claude ") } ?? matches.first
 
         if let proc = primaryProcess {
@@ -22,8 +21,9 @@ public final class ClaudeCollector: Sendable {
             status.process = AgentProcessInfo(isRunning: false)
         }
 
-        // 2. Parse model from settings.json
         let home = FileManager.default.homeDirectoryForCurrentUser
+
+        // 2. Parse model from settings.json
         let settingsURL = home.appendingPathComponent(".claude/settings.json")
         if let data = try? Data(contentsOf: settingsURL),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -37,7 +37,15 @@ public final class ClaudeCollector: Sendable {
             }
         }
 
-        // 3. Parse ~/.claude.json for quotas
+        // 3. Lifetime messages from stats-cache.json
+        let statsURL = home.appendingPathComponent(".claude/stats-cache.json")
+        if let data = try? Data(contentsOf: statsURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let totalMsgs = json["totalMessages"] as? Int {
+            status.lifetimeMessages = totalMsgs
+        }
+
+        // 4. Parse ~/.claude.json for authentic live quotas
         let claudeConfigURL = home.appendingPathComponent(".claude.json")
         guard let configData = try? Data(contentsOf: claudeConfigURL),
               let configJson = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
