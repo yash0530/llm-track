@@ -1,13 +1,6 @@
 import Cocoa
 import SwiftUI
 
-public final class ClickThroughHostingView<Content: View>: NSHostingView<Content> {
-    public override func hitTest(_ point: NSPoint) -> NSView? {
-        // Return nil so mouse clicks pass straight through to NSStatusBarButton
-        return nil
-    }
-}
-
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -18,20 +11,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Run purely as menu bar accessory (no dock icon)
         NSApp.setActivationPolicy(.accessory)
 
-        // Fixed width ensures menu bar button never collapses to zero width
-        let itemWidth: CGFloat = 54
-        statusItem = NSStatusBar.system.statusItem(withLength: itemWidth)
+        // Single clean native menu bar status item
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
+            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 14.0, weight: .regular)
+            if let image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "LLM Track")?.withSymbolConfiguration(symbolConfig) {
+                image.isTemplate = true
+                button.image = image
+            }
             button.target = self
             button.action = #selector(statusBarButtonClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-
-            let tileView = MenuBarTileView(store: store)
-            let hostingView = ClickThroughHostingView(rootView: tileView)
-            hostingView.frame = NSRect(x: 0, y: 0, width: itemWidth, height: 24)
-            hostingView.autoresizingMask = [.width, .height]
-            button.addSubview(hostingView)
         }
 
         // Setup Popover with transient behavior (dismisses on click outside)

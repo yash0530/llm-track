@@ -4,14 +4,15 @@ public struct LiquidGlassCard<Content: View>: View {
     private let content: Content
     private let cornerRadius: CGFloat
 
-    public init(cornerRadius: CGFloat = 9, @ViewBuilder content: () -> Content) {
+    public init(cornerRadius: CGFloat = 8, @ViewBuilder content: () -> Content) {
         self.cornerRadius = cornerRadius
         self.content = content()
     }
 
     public var body: some View {
         content
-            .padding(9)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(Color.primary.opacity(0.035))
@@ -28,7 +29,7 @@ public struct LiquidGlassCard<Content: View>: View {
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
-                        lineWidth: 0.75
+                        lineWidth: 0.5
                     )
             )
     }

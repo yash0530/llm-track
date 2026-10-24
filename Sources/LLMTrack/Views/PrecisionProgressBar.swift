@@ -2,73 +2,75 @@ import SwiftUI
 
 public struct PrecisionProgressBar: View {
     public let label: String
-    public let usedPercent: Double
-    public let remainingPercent: Double?
-    public let secondaryDetail: String?
+    public let remainingPercent: Double
+    public let resetText: String?
     public let baseTint: Color
 
     public init(
         label: String,
-        usedPercent: Double,
-        remainingPercent: Double? = nil,
-        secondaryDetail: String? = nil,
+        remainingPercent: Double,
+        resetText: String? = nil,
         baseTint: Color = .blue
     ) {
         self.label = label
-        self.usedPercent = max(0, min(100, usedPercent))
-        self.remainingPercent = remainingPercent
-        self.secondaryDetail = secondaryDetail
+        self.remainingPercent = max(0, min(100, remainingPercent))
+        self.resetText = resetText
         self.baseTint = baseTint
     }
 
-    private var isExhausted: Bool {
-        if let rem = remainingPercent {
-            return rem <= 0.0
+    private var percentTextColor: Color {
+        if remainingPercent <= 0.001 {
+            return Color(red: 0.92, green: 0.32, blue: 0.28)
+        } else if remainingPercent < 20.0 {
+            return Color.orange
         }
-        return usedPercent >= 100.0
+        return Color.primary.opacity(0.90)
     }
 
-    private var dynamicTint: Color {
-        if isExhausted {
-            return .red
+    private var barGradient: LinearGradient {
+        if remainingPercent <= 0.001 {
+            return LinearGradient(
+                colors: [Color.red.opacity(0.6), Color.red],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        } else if remainingPercent < 20.0 {
+            return LinearGradient(
+                colors: [Color.orange.opacity(0.85), Color.orange],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
         }
-        if let rem = remainingPercent {
-            if rem < 20.0 { return .orange }
-        }
-        return baseTint
+        return LinearGradient(
+            colors: [baseTint.opacity(0.75), baseTint],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 3.5) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
                 Text(label)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 10.5, weight: .regular))
+                    .foregroundColor(.secondary.opacity(0.75))
 
                 Spacer()
 
-                HStack(spacing: 4) {
-                    if isExhausted {
-                        Text("0% left (EXHAUSTED)")
-                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                            .monospacedDigit()
-                            .foregroundColor(.red)
-                    } else if let rem = remainingPercent {
-                        Text(String(format: "%.0f%% left", rem))
-                            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                            .monospacedDigit()
-                            .foregroundColor(.primary)
-                    } else {
-                        Text(String(format: "%.0f%% used", usedPercent))
-                            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                            .monospacedDigit()
-                            .foregroundColor(.primary)
-                    }
+                HStack(spacing: 3.5) {
+                    Text(String(format: "%.0f%% left", remainingPercent))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundColor(percentTextColor)
 
-                    if let detail = secondaryDetail {
-                        Text("(\(detail))")
+                    if let reset = resetText, !reset.isEmpty {
+                        Text("·")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary.opacity(0.35))
+
+                        Text(reset)
                             .font(.system(size: 9.5, weight: .regular))
-                            .foregroundColor(.secondary.opacity(0.8))
+                            .foregroundColor(.secondary.opacity(0.60))
                     }
                 }
             }
@@ -76,21 +78,17 @@ public struct PrecisionProgressBar: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.primary.opacity(0.08))
-                        .frame(height: 4.5)
+                        .fill(Color.primary.opacity(0.07))
+                        .frame(height: 3.5)
 
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [dynamicTint.opacity(0.85), dynamicTint],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: max(4, geo.size.width * CGFloat(usedPercent / 100.0)), height: 4.5)
+                    if remainingPercent > 0.001 {
+                        Capsule()
+                            .fill(barGradient)
+                            .frame(width: max(3.5, geo.size.width * CGFloat(remainingPercent / 100.0)), height: 3.5)
+                    }
                 }
             }
-            .frame(height: 4.5)
+            .frame(height: 3.5)
         }
     }
 }

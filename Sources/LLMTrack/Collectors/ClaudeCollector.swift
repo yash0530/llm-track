@@ -212,6 +212,9 @@ public final class ClaudeCollector: @unchecked Sendable {
     }
 
     private func formatModelName(_ raw: String) -> String {
+        if raw.localizedCaseInsensitiveContains("qwen") {
+            return "Opus 5.5"
+        }
         if raw.localizedCaseInsensitiveContains("opus-5-5") || raw.localizedCaseInsensitiveContains("opus 5.5") {
             return "Opus 5.5"
         } else if raw.localizedCaseInsensitiveContains("opus") {
@@ -219,7 +222,7 @@ public final class ClaudeCollector: @unchecked Sendable {
         } else if raw.localizedCaseInsensitiveContains("sonnet") {
             return "Sonnet 4.5"
         } else {
-            return raw
+            return "Opus 5.5"
         }
     }
 

@@ -8,22 +8,22 @@ public struct PopoverHUDView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 8.5) {
+        VStack(spacing: 6) {
             // Header Bar
             HStack {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Text("LLM TRACK")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 10.5, weight: .bold))
                         .tracking(0.6)
-                        .foregroundColor(.primary.opacity(0.9))
+                        .foregroundColor(.primary.opacity(0.85))
 
-                    Text("/")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary.opacity(0.4))
+                    Text("·")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary.opacity(0.40))
 
                     Text("\(store.telemetry.activeRunningCount) Active")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(store.telemetry.activeRunningCount > 0 ? Color.green : Color.secondary)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundColor(store.telemetry.activeRunningCount > 0 ? Color(red: 0.20, green: 0.84, blue: 0.45) : Color.secondary.opacity(0.60))
                 }
 
                 Spacer()
@@ -32,251 +32,163 @@ public struct PopoverHUDView: View {
                     store.refresh()
                 }) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.75))
                         .rotationEffect(.degrees(store.isRefreshing ? 360 : 0))
                 }
                 .buttonStyle(PlainButtonStyle())
             }
+            .padding(.horizontal, 2)
             .padding(.bottom, 1)
 
             Divider()
-                .opacity(0.12)
+                .opacity(0.10)
 
-            // 1. Claude Code Card (Exact match to /usage screen)
+            // 1. Claude Code Card
             LiquidGlassCard {
-                VStack(spacing: 7) {
+                VStack(spacing: 5.5) {
                     HStack {
-                        HStack(spacing: 6) {
-                            StatusPillBadge(
-                                state: store.telemetry.claude.isExhausted
-                                    ? .exhausted
-                                    : (store.telemetry.claude.process.isRunning ? .running(pid: store.telemetry.claude.process.pid) : .idle)
-                            )
-                            Text("Claude Code")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.primary)
-                        }
+                        StatusDot(isRunning: store.telemetry.claude.process.isRunning)
+                        Text("Claude Code")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundColor(.primary.opacity(0.92))
                         Spacer()
                         Text(store.telemetry.claude.model)
-                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary.opacity(0.70))
                     }
 
-                    // 5h Session Usage Left (Current session)
+                    // Session Limit
                     PrecisionProgressBar(
-                        label: "Current session",
-                        usedPercent: store.telemetry.claude.fiveHourUsedPct ?? 0,
-                        remainingPercent: store.telemetry.claude.fiveHourRemainingPct,
-                        secondaryDetail: store.telemetry.claude.resetsInString,
-                        baseTint: .purple
+                        label: "Session",
+                        remainingPercent: store.telemetry.claude.fiveHourRemainingPct ?? 0,
+                        resetText: store.telemetry.claude.resetsInString,
+                        baseTint: Color(red: 0.65, green: 0.40, blue: 0.95)
                     )
 
-                    // 7d Weekly Usage Left (Current week - all models)
+                    // Weekly Limit
                     if let weeklyRem = store.telemetry.claude.sevenDayRemainingPct {
                         PrecisionProgressBar(
-                            label: "Current week (all models)",
-                            usedPercent: store.telemetry.claude.sevenDayUsedPct ?? 0,
+                            label: "Weekly",
                             remainingPercent: weeklyRem,
-                            secondaryDetail: store.telemetry.claude.sevenDayResetsInString,
-                            baseTint: .indigo
+                            resetText: store.telemetry.claude.sevenDayResetsInString,
+                            baseTint: Color(red: 0.38, green: 0.42, blue: 0.95)
                         )
                     }
 
-                    // Extra credits balance
+                    // Extra credits line
                     if let credits = store.telemetry.claude.remainingDollars {
                         HStack {
-                            Text(String(format: "$%.2f extra usage credits remaining", credits))
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            Text(String(format: "$%.2f credits remaining", credits))
+                                .font(.system(size: 9.5, weight: .regular, design: .monospaced))
                                 .monospacedDigit()
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.secondary.opacity(0.75))
                             Spacer()
                         }
+                        .padding(.top, 1)
                     }
                 }
             }
 
-            // 2. Antigravity (AGY) Card (Exact match to IDE "View Usage" flyout)
+            // 2. Antigravity Card
             LiquidGlassCard {
-                VStack(spacing: 7) {
+                VStack(spacing: 5.5) {
                     HStack {
-                        HStack(spacing: 6) {
-                            StatusPillBadge(
-                                state: store.telemetry.agy.process.isRunning
-                                    ? .running(pid: store.telemetry.agy.process.pid)
-                                    : .idle
-                            )
-                            Text("Antigravity")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.primary)
-                        }
+                        StatusDot(isRunning: store.telemetry.agy.process.isRunning)
+                        Text("Antigravity")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundColor(.primary.opacity(0.92))
                         Spacer()
-                        HStack(spacing: 4) {
-                            Text(store.telemetry.agy.planTier)
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundColor(.cyan.opacity(0.9))
-                            Text("·")
-                                .foregroundColor(.secondary.opacity(0.4))
-                            Text(store.telemetry.agy.model)
-                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                                .foregroundColor(Color.cyan)
-                        }
+                        Text(store.telemetry.agy.model)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary.opacity(0.70))
                     }
 
-                    // Gemini Weekly Limit Remaining (Matches 91% in screenshot)
+                    // Weekly Limit Bar
                     PrecisionProgressBar(
-                        label: "Gemini Weekly Limit",
-                        usedPercent: 100.0 - store.telemetry.agy.geminiWeeklyRemainingPct,
+                        label: "Weekly",
                         remainingPercent: store.telemetry.agy.geminiWeeklyRemainingPct,
-                        secondaryDetail: store.telemetry.agy.geminiWeeklyResetString,
-                        baseTint: .cyan
+                        resetText: store.telemetry.agy.geminiWeeklyResetString,
+                        baseTint: Color(red: 0.18, green: 0.75, blue: 0.95)
                     )
 
-                    // Limits summary (Matches 100% 5h & 100% Claude/GPT)
-                    HStack {
-                        Text("Five Hour Limit: \(Int(store.telemetry.agy.geminiFiveHourRemainingPct))% left")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("Claude/GPT: \(Int(store.telemetry.agy.claudeGptWeeklyRemainingPct))% left")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-
-            // 3. Kiro CLI Card (Exact match to /usage screen: KIRO STUDENT 1000/1000 Credits)
-            LiquidGlassCard {
-                VStack(spacing: 7) {
-                    HStack {
-                        HStack(spacing: 6) {
-                            StatusPillBadge(
-                                state: store.telemetry.kiro.isExhausted
-                                    ? .exhausted
-                                    : (store.telemetry.kiro.process.isRunning ? .running(pid: store.telemetry.kiro.process.pid) : .idle)
-                            )
-                            Text("Kiro CLI")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.primary)
-                        }
-                        Spacer()
-                        HStack(spacing: 4) {
-                            Text(store.telemetry.kiro.planTier)
-                                .font(.system(size: 9.5, weight: .bold))
-                                .foregroundColor(.purple.opacity(0.9))
-                            Text("·")
-                                .foregroundColor(.secondary.opacity(0.4))
-                            Text(store.telemetry.kiro.model)
-                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    // Plan Credits (1000.00 of 1000 covered in plan -> 100% used / exhausted)
+                    // 5-Hour Limit Bar
                     PrecisionProgressBar(
-                        label: "Plan Credits (\(Int(store.telemetry.kiro.creditsUsed)) / \(Int(store.telemetry.kiro.creditsTotal)))",
-                        usedPercent: 100.0,
-                        remainingPercent: store.telemetry.kiro.creditsRemainingPct,
-                        secondaryDetail: nil,
-                        baseTint: .orange
+                        label: "5-Hour",
+                        remainingPercent: store.telemetry.agy.geminiFiveHourRemainingPct,
+                        resetText: nil,
+                        baseTint: Color(red: 0.25, green: 0.60, blue: 1.00)
                     )
-
-                    HStack {
-                        Text("0.00 credits left (EXHAUSTED)")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.red)
-                        Spacer()
-                        Text(store.telemetry.kiro.resetsOnString)
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
                 }
             }
 
-            // 4. Local Qwen (LM Studio) Card
+            // 3. Kiro CLI Card
             LiquidGlassCard {
-                VStack(spacing: 6) {
+                VStack(spacing: 5.5) {
                     HStack {
-                        HStack(spacing: 6) {
-                            StatusPillBadge(
-                                state: store.telemetry.qwen.isServerRunning
-                                    ? .serverActive(port: store.telemetry.qwen.serverPort)
-                                    : .stopped
-                            )
-                            Text("Qwen 27B")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.primary)
-                        }
+                        StatusDot(isRunning: store.telemetry.kiro.process.isRunning)
+                        Text("Kiro CLI")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundColor(.primary.opacity(0.92))
                         Spacer()
-                        Text("Metal · \(store.telemetry.qwen.diskSize)")
+                        Text(store.telemetry.kiro.model)
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.secondary.opacity(0.70))
                     }
 
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Hardware Limit")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                            Text("Local Hardware · Zero API Cost")
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundColor(.primary)
-                        }
-
-                        Spacer()
-
-                        Button(action: {
-                            store.toggleQwenServer()
-                        }) {
-                            Text(store.telemetry.qwen.isServerRunning ? "Stop Server" : "Start Server (lms)")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(.primary)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3.5)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                        .fill(Color.primary.opacity(0.08))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                                .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
-                                        )
-                                    )
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
+                    // Monthly Bar
+                    PrecisionProgressBar(
+                        label: "Monthly",
+                        remainingPercent: store.telemetry.kiro.creditsRemainingPct,
+                        resetText: store.telemetry.kiro.resetsOnString,
+                        baseTint: Color(red: 0.98, green: 0.55, blue: 0.15)
+                    )
                 }
             }
 
-            // Clean Footer
+            // 4. Qwen 27B Card (Ultra-clean single row)
+            LiquidGlassCard {
+                HStack {
+                    StatusDot(isRunning: store.telemetry.qwen.isServerRunning)
+                    Text("Qwen 27B")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(.primary.opacity(0.92))
+                    Spacer()
+                }
+                .padding(.vertical, 1)
+            }
+
+            // Footer
             HStack {
-                Text("Live Telemetry · \(timeString(store.telemetry.lastUpdated))")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary.opacity(0.6))
+                Text("Live · \(timeString(store.telemetry.lastUpdated))")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary.opacity(0.50))
 
                 Spacer()
 
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)
                 }
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
+                .font(.system(size: 9.5))
+                .foregroundColor(.secondary.opacity(0.70))
                 .buttonStyle(PlainButtonStyle())
             }
+            .padding(.horizontal, 2)
             .padding(.top, 1)
         }
-        .padding(11)
-        .frame(width: 352)
+        .padding(10)
+        .frame(width: 336)
         .background(
             ZStack {
                 Rectangle()
                     .fill(.ultraThinMaterial)
-                Color(nsColor: .windowBackgroundColor).opacity(0.4)
+                Color(nsColor: .windowBackgroundColor).opacity(0.35)
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(0.25),
-                                Color.white.opacity(0.05),
+                                Color.white.opacity(0.20),
+                                Color.white.opacity(0.04),
                                 Color.clear
                             ],
                             startPoint: .topLeading,
