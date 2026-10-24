@@ -85,26 +85,105 @@ Built 100% in native Swift 6 and SwiftUI with an understated, compact **Liquid G
 
 ---
 
-## Build & Installation
+## Architecture Overview
+
+For a comprehensive deep-dive into the internal telemetry protocols and lifecycle state machines, see [ARCHITECTURE.md](file:///Users/yash/Desktop/Programming/llm-track/ARCHITECTURE.md).
+
+```mermaid
+flowchart TD
+    subgraph macOS Menu Bar
+        StatusItem["NSStatusItem (cpu icon)"]
+        Popover["NSPopover (336×360pt, animates=true)"]
+    end
+
+    subgraph SwiftUI Presentation Layer
+        HUD["PopoverHUDView"]
+        ClaudeCard["Claude Code Card"]
+        AGYCard["Antigravity Card"]
+        KiroCard["Kiro CLI Card"]
+        QwenCard["Qwen 3.8 27B Card (Interactive Toggle)"]
+        ProgressBar["PrecisionProgressBar"]
+        StatusDot["StatusDot (5.5pt glowing)"]
+    end
+
+    subgraph State Management
+        Store["LLMTrackStore (@MainActor)"]
+        Timer["Combine Timer (8s interval)"]
+    end
+
+    subgraph Telemetry Collectors
+        ClaudeCol["ClaudeCollector"]
+        AGYCol["AGYCollector"]
+        KiroCol["KiroCollector"]
+        QwenCol["QwenCollector"]
+    end
+
+    subgraph External Agent Subsystems
+        ClaudeState["~/.claude/statusline_state.json<br/>~/.claude.json<br/>Anthropic OAuth API"]
+        AGYRPC["Antigravity Go language_server<br/>Connect-RPC via 127.0.0.1<br/>/RetrieveUserQuotaSummary"]
+        KiroDB["Kiro SQLite Storage<br/>Process Inspection"]
+        LocalLLM["llm-serve Daemon<br/>Port 8089 (Splash) / 8790 (Proxy)<br/>~/.local/state/local-llm/*.pid"]
+    end
+
+    StatusItem -->|Left-click| Popover
+    Popover --> HUD
+    HUD --> ClaudeCard & AGYCard & KiroCard & QwenCard
+    ClaudeCard & AGYCard & KiroCard --> ProgressBar
+    ClaudeCard & AGYCard & KiroCard & QwenCard --> StatusDot
+
+    Store -->|Published telemetry| HUD
+    Timer -->|Periodic tick| Store
+    Store --> ClaudeCol & AGYCol & KiroCol & QwenCol
+
+    ClaudeCol --> ClaudeState
+    AGYCol --> AGYRPC
+    KiroCol --> KiroDB
+    QwenCol --> LocalLLM
+```
+
+---
+
+## Build, Run & Quick Commands
 
 ### Requirements
 - macOS 14.0+ (Sonoma, Sequoia, or later)
 - Swift 5.9+ / Xcode Command Line Tools
 
-### 1. Build and Run Application
+### 1. Build and Start Application
 ```bash
 git clone https://github.com/yash0530/llm-track.git
 cd llm-track
 
-# Build and package build/LLMTrack.app
+# Build and start in macOS menu bar (one-liner)
+make start
+```
+
+Alternatively:
+```bash
+# Package the standalone application bundle
 make app
 
-# Launch LLM Track in macOS menu bar
+# Launch LLM Track in background
 open build/LLMTrack.app
 ```
 
-### 2. Quick Telemetry CLI Dump
-You can query the telemetry engine directly from the command line:
+### 2. Stop or Restart
+```bash
+# Stop running instance
+make stop
+
+# Rebuild and restart
+make restart
+```
+
+### 3. Automatic Start on macOS Login
+To have LLM Track start automatically whenever you log in:
+1. Open **System Settings** → **General** → **Login Items**.
+2. Click the **+** button under *Open at Login*.
+3. Select `/Users/yash/Desktop/Programming/llm-track/build/LLMTrack.app`.
+
+### 4. Quick Telemetry CLI Dump
+Query the telemetry engine directly from the command line without opening the GUI:
 ```bash
 make dump
 ```
@@ -112,14 +191,14 @@ make dump
 Example Output:
 ```text
 === LLM TRACK TELEMETRY ===
-Claude: running=true, pid=4704, model=Opus 5.5, 5h=0.0% rem (EXHAUSTED), resets=Resets in 3h 41m, 7d=33.0% rem (Resets in 21h 51m), credits=$98.50
-AGY: running=true, model=Gemini 3.8 Flash High, plan=Google AI Pro, geminiWeekly=88.0% rem (Resets in 6d 10h), gemini5h=88.0% rem, claudeGptWeekly=100.0% rem
+Claude: running=true, pid=4704, model=Opus 5.5, 5h=0.0% rem (EXHAUSTED), resets=Resets in 1h 44m, 7d=33.0% rem (Resets in 19h 54m), credits=$98.50
+AGY: running=true, model=Gemini 3.8 Flash High, plan=Google AI Pro, geminiWeekly=83.4% rem (Resets in 6d 8h), gemini5h=74.2% rem (Resets in 1h 55m), claudeGptWeekly=100.0% rem
 Kiro: running=true, pid=4631, model=Opus 5.5, plan=KIRO STUDENT, credits=1000.0/1000.0 (0.0% rem, EXHAUSTED), resets=Resets Nov 1
-Qwen: serverRunning=true, model=Qwen 27B, disk=17.4 GB
+Qwen: serverRunning=false, model=Qwen 3.8 27B, disk=17.4 GB
 ===========================
 ```
 
-### 3. Clean Build Artifacts
+### 5. Clean Build Artifacts
 ```bash
 make clean
 ```
@@ -130,9 +209,10 @@ make clean
 
 ```
 llm-track/
-├── Makefile                          # Build targets: build, run, app, dump, clean
+├── ARCHITECTURE.md                   # System specifications & Mermaid diagrams
+├── Makefile                          # Build targets: build, run, app, start, stop, restart, dump, clean
 ├── Package.swift                     # Swift Package Manager manifest
-├── README.md                         # Documentation & Architecture
+├── README.md                         # Documentation & Quickstart
 ├── Resources/
 │   └── Info.plist                    # App bundle metadata (LSUIElement = true)
 ├── Scripts/
