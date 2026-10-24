@@ -43,12 +43,12 @@ public struct MenuBarTileView: View {
     }
 
     private var claudeDotColor: Color {
-        if !store.telemetry.claude.process.isRunning {
-            return Color.primary.opacity(0.20)
-        }
-        if let rem = store.telemetry.claude.fiveHourRemainingPct, rem <= 0 {
+        if store.telemetry.claude.isExhausted {
             return Color.red // Warning: Exhausted!
         }
-        return Color.purple
+        if store.telemetry.claude.process.isRunning {
+            return Color.purple
+        }
+        return Color.primary.opacity(0.20)
     }
 }

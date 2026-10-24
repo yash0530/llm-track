@@ -22,13 +22,26 @@ public struct ClaudeStatus: Sendable, Equatable {
     public var fiveHourUsedPct: Double?
     public var fiveHourRemainingPct: Double?
     public var fiveHourResetsAt: Date?
+    public var resetTimeString: String?
     public var sevenDayUsedPct: Double?
     public var sevenDayRemainingPct: Double?
     public var remainingDollars: Double?
-    public var lifetimeMessages: Int?
     public var lastUpdated: Date?
 
+    public var isExhausted: Bool {
+        if let rem = fiveHourRemainingPct {
+            return rem <= 0.001
+        }
+        if let used = fiveHourUsedPct {
+            return used >= 99.99
+        }
+        return false
+    }
+
     public var resetsInString: String? {
+        if let resetStr = resetTimeString, !resetStr.isEmpty {
+            return resetStr
+        }
         guard let resetsAt = fiveHourResetsAt else { return nil }
         let diff = resetsAt.timeIntervalSince(Date())
         if diff <= 0 { return "Resetting" }
@@ -43,14 +56,14 @@ public struct ClaudeStatus: Sendable, Equatable {
 
     public init(
         process: AgentProcessInfo = AgentProcessInfo(),
-        model: String = "Claude Opus",
+        model: String = "Opus 5.5",
         fiveHourUsedPct: Double? = nil,
         fiveHourRemainingPct: Double? = nil,
         fiveHourResetsAt: Date? = nil,
+        resetTimeString: String? = nil,
         sevenDayUsedPct: Double? = nil,
         sevenDayRemainingPct: Double? = nil,
         remainingDollars: Double? = nil,
-        lifetimeMessages: Int? = nil,
         lastUpdated: Date? = nil
     ) {
         self.process = process
@@ -58,10 +71,10 @@ public struct ClaudeStatus: Sendable, Equatable {
         self.fiveHourUsedPct = fiveHourUsedPct
         self.fiveHourRemainingPct = fiveHourRemainingPct
         self.fiveHourResetsAt = fiveHourResetsAt
+        self.resetTimeString = resetTimeString
         self.sevenDayUsedPct = sevenDayUsedPct
         self.sevenDayRemainingPct = sevenDayRemainingPct
         self.remainingDollars = remainingDollars
-        self.lifetimeMessages = lifetimeMessages
         self.lastUpdated = lastUpdated
     }
 }
@@ -69,47 +82,30 @@ public struct ClaudeStatus: Sendable, Equatable {
 public struct AGYStatus: Sendable, Equatable {
     public var process: AgentProcessInfo
     public var model: String
-    public var account: String?
+    public var planTier: String
+    public var quotaDetail: String
+    public var todayTokensFormatted: String?
+    public var todayCostFormatted: String?
     public var activeDirectory: String?
-    public var contextTokens: Int?
-    public var maxContextTokens: Int
-    public var contextUsedPct: Double?
-    public var contextRemainingPct: Double?
-    public var sessionSteps: Int?
     public var isLanguageServerRunning: Bool
-
-    public var contextTokensFormatted: String? {
-        guard let tokens = contextTokens else { return nil }
-        if tokens >= 1_000_000 {
-            return String(format: "%.1fM", Double(tokens) / 1_000_000.0)
-        } else if tokens >= 1_000 {
-            return String(format: "%.1fk", Double(tokens) / 1_000.0)
-        } else {
-            return "\(tokens)"
-        }
-    }
 
     public init(
         process: AgentProcessInfo = AgentProcessInfo(),
         model: String = "Gemini 3.8 Flash High",
-        account: String? = nil,
+        planTier: String = "Personal Tier (Google OAuth)",
+        quotaDetail: String = "Standard Daily Limit (1,500 RPD)",
+        todayTokensFormatted: String? = nil,
+        todayCostFormatted: String? = nil,
         activeDirectory: String? = nil,
-        contextTokens: Int? = nil,
-        maxContextTokens: Int = 1_000_000,
-        contextUsedPct: Double? = nil,
-        contextRemainingPct: Double? = nil,
-        sessionSteps: Int? = nil,
         isLanguageServerRunning: Bool = false
     ) {
         self.process = process
         self.model = model
-        self.account = account
+        self.planTier = planTier
+        self.quotaDetail = quotaDetail
+        self.todayTokensFormatted = todayTokensFormatted
+        self.todayCostFormatted = todayCostFormatted
         self.activeDirectory = activeDirectory
-        self.contextTokens = contextTokens
-        self.maxContextTokens = maxContextTokens
-        self.contextUsedPct = contextUsedPct
-        self.contextRemainingPct = contextRemainingPct
-        self.sessionSteps = sessionSteps
         self.isLanguageServerRunning = isLanguageServerRunning
     }
 }
@@ -117,24 +113,21 @@ public struct AGYStatus: Sendable, Equatable {
 public struct KiroStatus: Sendable, Equatable {
     public var process: AgentProcessInfo
     public var model: String
-    public var account: String?
-    public var contextUsedPct: Double?
-    public var contextRemainingPct: Double?
+    public var planTier: String
+    public var quotaDetail: String
     public var sessionTitle: String?
 
     public init(
         process: AgentProcessInfo = AgentProcessInfo(),
-        model: String = "Opus 5.5",
-        account: String? = nil,
-        contextUsedPct: Double? = nil,
-        contextRemainingPct: Double? = nil,
+        model: String = "Opus 5.5 (Kiro)",
+        planTier: String = "Builder Plan · Individual Quota",
+        quotaDetail: String = "Active / Standard Tier",
         sessionTitle: String? = nil
     ) {
         self.process = process
         self.model = model
-        self.account = account
-        self.contextUsedPct = contextUsedPct
-        self.contextRemainingPct = contextRemainingPct
+        self.planTier = planTier
+        self.quotaDetail = quotaDetail
         self.sessionTitle = sessionTitle
     }
 }

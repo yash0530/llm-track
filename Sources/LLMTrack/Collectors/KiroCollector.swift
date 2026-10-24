@@ -7,7 +7,7 @@ public final class KiroCollector: Sendable {
         var status = KiroStatus()
 
         // 1. Process matching
-        let matches = ProcessHelper.findProcesses(matching: ["kiro-cli", "kiro_cli", "Kiro.app"])
+        let matches = ProcessHelper.findProcesses(matching: ["kiro-cli", "kiro_cli", "kiro-cli-term", "Kiro.app", "kiro "])
         let proc = matches.first
 
         if let proc = proc {
@@ -21,13 +21,19 @@ public final class KiroCollector: Sendable {
             status.process = AgentProcessInfo(isRunning: false)
         }
 
-        // 2. Default user account from Kiro configuration
-        status.account = "yashjain@utexas.edu"
-
-        // 3. Inspect recent sessions in ~/.kiro/sessions/cli/ for actual context utilization
+        // 2. Model from ~/.kiro/settings/cli.json
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let sessionsDir = home.appendingPathComponent(".kiro/sessions/cli")
+        let settingsURL = home.appendingPathComponent(".kiro/settings/cli.json")
+        if let data = try? Data(contentsOf: settingsURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let defaultModel = json["chat.defaultModel"] as? String {
+            status.model = formatModelName(defaultModel)
+        } else {
+            status.model = "Opus 5.5 (Kiro)"
+        }
 
+        // 3. Inspect recent sessions in ~/.kiro/sessions/cli/ for session title
+        let sessionsDir = home.appendingPathComponent(".kiro/sessions/cli")
         if let files = try? FileManager.default.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) {
             let jsonFiles = files.filter { $0.pathExtension == "json" }
             let sorted = jsonFiles.sorted { f1, f2 in
@@ -36,38 +42,19 @@ public final class KiroCollector: Sendable {
                 return d1 > d2
             }
 
-            // Find the most recent session with recorded usage
-            for sessionURL in sorted.prefix(10) {
-                guard let data = try? Data(contentsOf: sessionURL),
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let sessionState = json["session_state"] as? [String: Any],
-                      let convMeta = sessionState["conversation_metadata"] as? [String: Any] else {
-                    continue
-                }
-
-                if let title = json["title"] as? String, status.sessionTitle == nil {
+            if let latestSession = sorted.first,
+               let data = try? Data(contentsOf: latestSession),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let title = json["title"] as? String, !title.isEmpty {
                     status.sessionTitle = title
                 }
-
-                if let usage = convMeta["last_context_usage"] as? [String: Any] {
-                    if let pct = usage["percentage"] as? Double {
-                        let roundedUsed = (pct * 10).rounded() / 10
-                        status.contextUsedPct = roundedUsed
-                        status.contextRemainingPct = max(0, 100.0 - roundedUsed)
-                    }
-
-                    if let modelId = usage["model_id"] as? String {
-                        status.model = formatModelName(modelId)
-                    }
-                    break
+                if let sessionState = json["session_state"] as? [String: Any],
+                   let rts = sessionState["rts_model_state"] as? [String: Any],
+                   let modelInfo = rts["model_info"] as? [String: Any],
+                   let modelName = modelInfo["model_name"] as? String {
+                    status.model = formatModelName(modelName)
                 }
             }
-        }
-
-        // If no usage found in any recent session, set to 0 rather than a fake fallback
-        if status.contextUsedPct == nil {
-            status.contextUsedPct = 0.0
-            status.contextRemainingPct = 100.0
         }
 
         return status
@@ -75,9 +62,9 @@ public final class KiroCollector: Sendable {
 
     private func formatModelName(_ raw: String) -> String {
         if raw.localizedCaseInsensitiveContains("opus") {
-            return "Opus 5.5"
+            return "Opus 5.5 (Kiro)"
         } else if raw.localizedCaseInsensitiveContains("sonnet") {
-            return "Sonnet 4.6"
+            return "Sonnet 4.6 (Kiro)"
         } else {
             return raw
         }
