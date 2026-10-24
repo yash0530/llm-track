@@ -21,10 +21,19 @@ public struct PrecisionProgressBar: View {
         self.baseTint = baseTint
     }
 
-    private var dynamicTint: Color {
+    private var isExhausted: Bool {
         if let rem = remainingPercent {
-            if rem < 15.0 { return .red }
-            if rem < 30.0 { return .orange }
+            return rem <= 0.0
+        }
+        return usedPercent >= 100.0
+    }
+
+    private var dynamicTint: Color {
+        if isExhausted {
+            return .red
+        }
+        if let rem = remainingPercent {
+            if rem < 20.0 { return .orange }
         }
         return baseTint
     }
@@ -39,8 +48,13 @@ public struct PrecisionProgressBar: View {
                 Spacer()
 
                 HStack(spacing: 4) {
-                    if let rem = remainingPercent {
-                        Text(String(format: "%.0f%% rem", rem))
+                    if isExhausted {
+                        Text("0% left (EXHAUSTED)")
+                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundColor(.red)
+                    } else if let rem = remainingPercent {
+                        Text(String(format: "%.0f%% left", rem))
                             .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                             .monospacedDigit()
                             .foregroundColor(.primary)

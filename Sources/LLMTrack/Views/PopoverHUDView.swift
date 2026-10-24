@@ -35,7 +35,6 @@ public struct PopoverHUDView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.secondary)
                         .rotationEffect(.degrees(store.isRefreshing ? 360 : 0))
-                        .animation(store.isRefreshing ? Animation.linear(duration: 0.8).repeatForever(autoreverses: false) : .default, value: store.isRefreshing)
                 }
                 .buttonStyle(PlainButtonStyle())
             }
@@ -44,15 +43,15 @@ public struct PopoverHUDView: View {
             Divider()
                 .opacity(0.12)
 
-            // 1. Claude Code Card
+            // 1. Claude Code Card (Real-Time Live OAuth Rate Limits)
             LiquidGlassCard {
                 VStack(spacing: 7) {
                     HStack {
                         HStack(spacing: 6) {
                             StatusPillBadge(
-                                state: store.telemetry.claude.process.isRunning
-                                    ? .running(pid: store.telemetry.claude.process.pid)
-                                    : .idle
+                                state: isClaudeExhausted
+                                    ? .exhausted
+                                    : (store.telemetry.claude.process.isRunning ? .running(pid: store.telemetry.claude.process.pid) : .idle)
                             )
                             Text("Claude Code")
                                 .font(.system(size: 12, weight: .semibold))
@@ -64,19 +63,19 @@ public struct PopoverHUDView: View {
                             .foregroundColor(.secondary)
                     }
 
-                    // 5h Session Bar
+                    // 5h Session Usage Left (Accurately detects 0% exhausted)
                     PrecisionProgressBar(
-                        label: "5h Session",
+                        label: "5h Session Limit",
                         usedPercent: store.telemetry.claude.fiveHourUsedPct ?? 0,
                         remainingPercent: store.telemetry.claude.fiveHourRemainingPct,
                         secondaryDetail: store.telemetry.claude.resetsInString,
                         baseTint: .purple
                     )
 
-                    // 7d Weekly Bar
+                    // 7d Weekly Usage Left
                     if let weeklyRem = store.telemetry.claude.sevenDayRemainingPct {
                         PrecisionProgressBar(
-                            label: "7d Weekly",
+                            label: "7d Weekly Quota",
                             usedPercent: store.telemetry.claude.sevenDayUsedPct ?? 0,
                             remainingPercent: weeklyRem,
                             baseTint: .indigo
@@ -86,7 +85,7 @@ public struct PopoverHUDView: View {
                     // Extra credits & Lifetime count
                     HStack {
                         if let credits = store.telemetry.claude.remainingDollars {
-                            Text(String(format: "$%.2f balance", credits))
+                            Text(String(format: "$%.2f credits available", credits))
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                                 .monospacedDigit()
                                 .foregroundColor(.secondary)
@@ -101,7 +100,7 @@ public struct PopoverHUDView: View {
                 }
             }
 
-            // 2. Antigravity (AGY) Card (100% Real Telemetry)
+            // 2. Antigravity (AGY) Card (Account & Plan Quota)
             LiquidGlassCard {
                 VStack(spacing: 7) {
                     HStack {
@@ -121,24 +120,31 @@ public struct PopoverHUDView: View {
                             .foregroundColor(Color.cyan)
                     }
 
-                    // Authentic Context Window Bar
-                    PrecisionProgressBar(
-                        label: "Context Window",
-                        usedPercent: store.telemetry.agy.contextUsedPct ?? 0,
-                        remainingPercent: store.telemetry.agy.contextRemainingPct,
-                        secondaryDetail: store.telemetry.agy.contextTokensFormatted != nil ? "\(store.telemetry.agy.contextTokensFormatted!)/1M" : nil,
-                        baseTint: .cyan
-                    )
-
-                    // Session Activity & Account
                     HStack {
-                        if let steps = store.telemetry.agy.sessionSteps {
-                            Text("\(steps) session steps")
-                                .font(.system(size: 10))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Account Quota")
+                                .font(.system(size: 11))
                                 .foregroundColor(.secondary)
+                            Text("Active / Unlimited Plan")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundColor(.primary)
                         }
                         Spacer()
-                        if let acct = store.telemetry.agy.account {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("Current Session")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            if let steps = store.telemetry.agy.sessionSteps {
+                                Text("\(steps) steps executed")
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.primary)
+                            }
+                        }
+                    }
+
+                    if let acct = store.telemetry.agy.account {
+                        HStack {
+                            Spacer()
                             Text(acct)
                                 .font(.system(size: 9.5))
                                 .foregroundColor(.secondary.opacity(0.8))
@@ -147,7 +153,7 @@ public struct PopoverHUDView: View {
                 }
             }
 
-            // 3. Kiro CLI Card (100% Real Telemetry)
+            // 3. Kiro CLI Card
             LiquidGlassCard {
                 VStack(spacing: 7) {
                     HStack {
@@ -167,21 +173,25 @@ public struct PopoverHUDView: View {
                             .foregroundColor(.secondary)
                     }
 
-                    // Real Context Window Bar
-                    PrecisionProgressBar(
-                        label: "Context Window",
-                        usedPercent: store.telemetry.kiro.contextUsedPct ?? 0,
-                        remainingPercent: store.telemetry.kiro.contextRemainingPct,
-                        baseTint: .green
-                    )
-
-                    // Account
-                    if let acct = store.telemetry.kiro.account {
-                        HStack {
-                            Spacer()
-                            Text(acct)
-                                .font(.system(size: 9.5))
-                                .foregroundColor(.secondary.opacity(0.7))
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Plan Quota")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            Text("AWS Social / Individual")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundColor(.primary)
+                        }
+                        Spacer()
+                        if let acct = store.telemetry.kiro.account {
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text("User")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                Text(acct)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundColor(.primary)
+                            }
                         }
                     }
                 }
@@ -208,9 +218,14 @@ public struct PopoverHUDView: View {
                     }
 
                     HStack {
-                        Text("Local LM Studio API")
-                            .font(.system(size: 10.5))
-                            .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Hardware Limit")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Text("100% Free / Unlimited")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundColor(.primary)
+                        }
 
                         Spacer()
 
@@ -221,7 +236,7 @@ public struct PopoverHUDView: View {
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundColor(.primary)
                                 .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
+                                .padding(.vertical, 3.5)
                                 .background(
                                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                                         .fill(Color.primary.opacity(0.08))
@@ -238,7 +253,7 @@ public struct PopoverHUDView: View {
 
             // Clean Footer
             HStack {
-                Text("Updated \(timeString(store.telemetry.lastUpdated))")
+                Text("Live Telemetry · \(timeString(store.telemetry.lastUpdated))")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary.opacity(0.6))
 
@@ -275,6 +290,13 @@ public struct PopoverHUDView: View {
                     )
             }
         )
+    }
+
+    private var isClaudeExhausted: Bool {
+        if let rem = store.telemetry.claude.fiveHourRemainingPct {
+            return rem <= 0.0
+        }
+        return false
     }
 
     private func timeString(_ date: Date) -> String {

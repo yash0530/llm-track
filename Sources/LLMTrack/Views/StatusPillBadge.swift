@@ -5,11 +5,11 @@ public enum ServiceExecutionState: Equatable {
     case idle
     case serverActive(port: Int)
     case stopped
+    case exhausted
 }
 
 public struct StatusPillBadge: View {
     public let state: ServiceExecutionState
-    @State private var isBreathing = false
 
     public init(state: ServiceExecutionState) {
         self.state = state
@@ -20,7 +20,6 @@ public struct StatusPillBadge: View {
             Circle()
                 .fill(dotColor)
                 .frame(width: 4.5, height: 4.5)
-                .opacity(isAnimated ? (isBreathing ? 1.0 : 0.5) : 0.7)
 
             Text(titleText)
                 .font(.system(size: 9.5, weight: .semibold))
@@ -37,20 +36,6 @@ public struct StatusPillBadge: View {
             Capsule()
                 .stroke(borderColor, lineWidth: 0.5)
         )
-        .onAppear {
-            if isAnimated {
-                withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
-                    isBreathing = true
-                }
-            }
-        }
-    }
-
-    private var isAnimated: Bool {
-        switch state {
-        case .running, .serverActive: return true
-        default: return false
-        }
     }
 
     private var titleText: String {
@@ -63,6 +48,8 @@ public struct StatusPillBadge: View {
             return ":\(port) ACTIVE"
         case .stopped:
             return "STOPPED"
+        case .exhausted:
+            return "EXHAUSTED"
         }
     }
 
@@ -71,6 +58,7 @@ public struct StatusPillBadge: View {
         case .running, .serverActive: return .green
         case .idle: return .secondary
         case .stopped: return .secondary.opacity(0.4)
+        case .exhausted: return .red
         }
     }
 
@@ -79,6 +67,7 @@ public struct StatusPillBadge: View {
         case .running, .serverActive: return .green
         case .idle: return .secondary
         case .stopped: return .secondary.opacity(0.8)
+        case .exhausted: return .red
         }
     }
 
@@ -87,6 +76,7 @@ public struct StatusPillBadge: View {
         case .running, .serverActive: return Color.green.opacity(0.12)
         case .idle: return Color.primary.opacity(0.04)
         case .stopped: return Color.primary.opacity(0.03)
+        case .exhausted: return Color.red.opacity(0.15)
         }
     }
 
@@ -95,6 +85,7 @@ public struct StatusPillBadge: View {
         case .running, .serverActive: return Color.green.opacity(0.28)
         case .idle: return Color.primary.opacity(0.08)
         case .stopped: return Color.primary.opacity(0.06)
+        case .exhausted: return Color.red.opacity(0.35)
         }
     }
 }
