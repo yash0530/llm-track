@@ -8,22 +8,22 @@ public struct PopoverHUDView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8.5) {
             // Header Bar
             HStack {
                 HStack(spacing: 6) {
                     Text("LLM TRACK")
                         .font(.system(size: 11, weight: .bold))
-                        .tracking(0.5)
-                        .foregroundColor(.white.opacity(0.9))
+                        .tracking(0.6)
+                        .foregroundColor(.primary.opacity(0.9))
 
                     Text("/")
                         .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.25))
+                        .foregroundColor(.secondary.opacity(0.4))
 
                     Text("\(store.telemetry.activeRunningCount) Active")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(store.telemetry.activeRunningCount > 0 ? Color.green : Color.white.opacity(0.5))
+                        .foregroundColor(store.telemetry.activeRunningCount > 0 ? Color.green : Color.secondary)
                 }
 
                 Spacer()
@@ -33,230 +33,184 @@ public struct PopoverHUDView: View {
                 }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.secondary)
                         .rotationEffect(.degrees(store.isRefreshing ? 360 : 0))
                         .animation(store.isRefreshing ? Animation.linear(duration: 0.8).repeatForever(autoreverses: false) : .default, value: store.isRefreshing)
                 }
                 .buttonStyle(PlainButtonStyle())
             }
-            .padding(.bottom, 2)
+            .padding(.bottom, 1)
 
             Divider()
-                .background(Color.white.opacity(0.08))
+                .opacity(0.12)
 
             // 1. Claude Code Card
-            serviceCard {
-                VStack(spacing: 8) {
+            LiquidGlassCard {
+                VStack(spacing: 7) {
                     HStack {
                         HStack(spacing: 6) {
-                            Circle()
-                                .fill(store.telemetry.claude.process.isRunning ? Color.green : Color.white.opacity(0.2))
-                                .frame(width: 6, height: 6)
+                            StatusPillBadge(
+                                state: store.telemetry.claude.process.isRunning
+                                    ? .running(pid: store.telemetry.claude.process.pid)
+                                    : .idle
+                            )
                             Text("Claude Code")
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.9))
-                            if let pid = store.telemetry.claude.process.pid {
-                                Text("PID \(pid)")
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.4))
-                            }
+                                .foregroundColor(.primary)
                         }
                         Spacer()
                         Text(store.telemetry.claude.model)
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.secondary)
                     }
 
-                    // 5h Session
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("5h Session")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                            Spacer()
-                            if let rem = store.telemetry.claude.fiveHourRemainingPct {
-                                Text(String(format: "%.0f%% remaining", rem))
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.9))
-                                if let resetsIn = store.telemetry.claude.resetsInString {
-                                    Text("(\(resetsIn))")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.white.opacity(0.4))
-                                }
-                            } else {
-                                Text("No limit active")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.4))
-                            }
-                        }
-                        HorizontalProgressBar(
-                            value: store.telemetry.claude.fiveHourUsedPct ?? 0,
-                            tint: (store.telemetry.claude.fiveHourRemainingPct ?? 100) < 30 ? Color.orange : Color.purple
+                    // 5h Session Bar
+                    PrecisionProgressBar(
+                        label: "5h Session",
+                        usedPercent: store.telemetry.claude.fiveHourUsedPct ?? 0,
+                        remainingPercent: store.telemetry.claude.fiveHourRemainingPct,
+                        secondaryDetail: store.telemetry.claude.resetsInString,
+                        baseTint: .purple
+                    )
+
+                    // 7d Weekly Bar
+                    if let weeklyRem = store.telemetry.claude.sevenDayRemainingPct {
+                        PrecisionProgressBar(
+                            label: "7d Weekly",
+                            usedPercent: store.telemetry.claude.sevenDayUsedPct ?? 0,
+                            remainingPercent: weeklyRem,
+                            baseTint: .indigo
                         )
                     }
 
-                    // 7d Weekly
-                    if let weeklyRem = store.telemetry.claude.sevenDayRemainingPct {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text("7d Weekly")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.5))
-                                Spacer()
-                                Text(String(format: "%.0f%% remaining", weeklyRem))
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.9))
-                            }
-                            HorizontalProgressBar(
-                                value: store.telemetry.claude.sevenDayUsedPct ?? 0,
-                                tint: Color.indigo.opacity(0.85)
-                            )
+                    // Extra credits & Lifetime count
+                    HStack {
+                        if let credits = store.telemetry.claude.remainingDollars {
+                            Text(String(format: "$%.2f balance", credits))
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if let msgs = store.telemetry.claude.lifetimeMessages {
+                            Text("\(msgs) lifetime msgs")
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.secondary.opacity(0.7))
                         }
                     }
                 }
             }
 
-            // 2. Antigravity (AGY) Card
-            serviceCard {
-                VStack(spacing: 8) {
+            // 2. Antigravity (AGY) Card (100% Real Telemetry)
+            LiquidGlassCard {
+                VStack(spacing: 7) {
                     HStack {
                         HStack(spacing: 6) {
-                            Circle()
-                                .fill(store.telemetry.agy.process.isRunning ? Color.green : Color.white.opacity(0.2))
-                                .frame(width: 6, height: 6)
-                            Text("Antigravity (AGY)")
+                            StatusPillBadge(
+                                state: store.telemetry.agy.process.isRunning
+                                    ? .running(pid: store.telemetry.agy.process.pid)
+                                    : .idle
+                            )
+                            Text("Antigravity")
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.9))
-                            if let pid = store.telemetry.agy.process.pid {
-                                Text("PID \(pid)")
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.4))
-                            }
+                                .foregroundColor(.primary)
                         }
                         Spacer()
                         Text(store.telemetry.agy.model)
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(Color.cyan.opacity(0.9))
+                            .foregroundColor(Color.cyan)
                     }
 
-                    // Context Window
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Context Window")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                            Spacer()
-                            let rem = store.telemetry.agy.contextRemainingPct ?? 82.0
-                            let used = store.telemetry.agy.contextUsedPct ?? 18.0
-                            Text(String(format: "%.0f%% remaining", rem))
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.9))
-                            Text(String(format: "(%.0f%% used)", used))
+                    // Authentic Context Window Bar
+                    PrecisionProgressBar(
+                        label: "Context Window",
+                        usedPercent: store.telemetry.agy.contextUsedPct ?? 0,
+                        remainingPercent: store.telemetry.agy.contextRemainingPct,
+                        secondaryDetail: store.telemetry.agy.contextTokensFormatted != nil ? "\(store.telemetry.agy.contextTokensFormatted!)/1M" : nil,
+                        baseTint: .cyan
+                    )
+
+                    // Session Activity & Account
+                    HStack {
+                        if let steps = store.telemetry.agy.sessionSteps {
+                            Text("\(steps) session steps")
                                 .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.secondary)
                         }
-                        HorizontalProgressBar(
-                            value: store.telemetry.agy.contextUsedPct ?? 18.0,
-                            tint: Color.cyan.opacity(0.85)
-                        )
-                    }
-
-                    // Daily Requests
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Daily Requests")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                            Spacer()
-                            let dailyRem = store.telemetry.agy.dailyRequestsRemainingPct ?? 65.0
-                            Text(String(format: "%.0f%% remaining", dailyRem))
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.9))
+                        Spacer()
+                        if let acct = store.telemetry.agy.account {
+                            Text(acct)
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.secondary.opacity(0.8))
                         }
-                        HorizontalProgressBar(
-                            value: store.telemetry.agy.dailyRequestsUsedPct ?? 35.0,
-                            tint: Color.blue.opacity(0.8)
-                        )
                     }
                 }
             }
 
-            // 3. Kiro CLI Card
-            serviceCard {
-                VStack(spacing: 8) {
+            // 3. Kiro CLI Card (100% Real Telemetry)
+            LiquidGlassCard {
+                VStack(spacing: 7) {
                     HStack {
                         HStack(spacing: 6) {
-                            Circle()
-                                .fill(store.telemetry.kiro.process.isRunning ? Color.yellow : Color.white.opacity(0.2))
-                                .frame(width: 6, height: 6)
+                            StatusPillBadge(
+                                state: store.telemetry.kiro.process.isRunning
+                                    ? .running(pid: store.telemetry.kiro.process.pid)
+                                    : .idle
+                            )
                             Text("Kiro CLI")
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.9))
-                            if let pid = store.telemetry.kiro.process.pid {
-                                Text("PID \(pid)")
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.4))
-                            }
+                                .foregroundColor(.primary)
                         }
                         Spacer()
                         Text(store.telemetry.kiro.model)
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.secondary)
                     }
 
-                    // Context Window
-                    VStack(alignment: .leading, spacing: 3) {
+                    // Real Context Window Bar
+                    PrecisionProgressBar(
+                        label: "Context Window",
+                        usedPercent: store.telemetry.kiro.contextUsedPct ?? 0,
+                        remainingPercent: store.telemetry.kiro.contextRemainingPct,
+                        baseTint: .green
+                    )
+
+                    // Account
+                    if let acct = store.telemetry.kiro.account {
                         HStack {
-                            Text("Context Window")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
                             Spacer()
-                            let rem = store.telemetry.kiro.contextRemainingPct ?? 84.5
-                            let used = store.telemetry.kiro.contextUsedPct ?? 15.5
-                            Text(String(format: "%.1f%% remaining", rem))
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.9))
-                            Text(String(format: "(%.1f%% used)", used))
-                                .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.4))
+                            Text(acct)
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.secondary.opacity(0.7))
                         }
-                        HorizontalProgressBar(
-                            value: store.telemetry.kiro.contextUsedPct ?? 15.5,
-                            tint: Color.green.opacity(0.85)
-                        )
                     }
                 }
             }
 
             // 4. Local Qwen (LM Studio) Card
-            serviceCard {
+            LiquidGlassCard {
                 VStack(spacing: 6) {
                     HStack {
                         HStack(spacing: 6) {
-                            Circle()
-                                .fill(store.telemetry.qwen.isServerRunning ? Color.green : Color.white.opacity(0.2))
-                                .frame(width: 6, height: 6)
+                            StatusPillBadge(
+                                state: store.telemetry.qwen.isServerRunning
+                                    ? .serverActive(port: store.telemetry.qwen.serverPort)
+                                    : .stopped
+                            )
                             Text("Qwen 27B")
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.9))
-                            Text("Local LM Studio")
-                                .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.primary)
                         }
                         Spacer()
                         Text("Metal · \(store.telemetry.qwen.diskSize)")
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.45))
+                            .foregroundColor(.secondary)
                     }
 
                     HStack {
-                        Text("Server:")
-                            .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.5))
-
-                        Text(store.telemetry.qwen.isServerRunning ? "Running (:1234)" : "Stopped")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(store.telemetry.qwen.isServerRunning ? Color.green : Color.white.opacity(0.7))
+                        Text("Local LM Studio API")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(.secondary)
 
                         Spacer()
 
@@ -265,15 +219,15 @@ public struct PopoverHUDView: View {
                         }) {
                             Text(store.telemetry.qwen.isServerRunning ? "Stop Server" : "Start Server (lms)")
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.9))
+                                .foregroundColor(.primary)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
                                 .background(
                                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                        .fill(Color.white.opacity(0.08))
+                                        .fill(Color.primary.opacity(0.08))
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                                .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                                                .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
                                         )
                                 )
                         }
@@ -282,11 +236,11 @@ public struct PopoverHUDView: View {
                 }
             }
 
-            // Footer (Clean, No URLs)
+            // Clean Footer
             HStack {
                 Text("Updated \(timeString(store.telemetry.lastUpdated))")
                     .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.35))
+                    .foregroundColor(.secondary.opacity(0.6))
 
                 Spacer()
 
@@ -294,33 +248,33 @@ public struct PopoverHUDView: View {
                     NSApplication.shared.terminate(nil)
                 }
                 .font(.system(size: 10))
-                .foregroundColor(.white.opacity(0.45))
+                .foregroundColor(.secondary)
                 .buttonStyle(PlainButtonStyle())
             }
-            .padding(.top, 2)
+            .padding(.top, 1)
         }
-        .padding(12)
-        .frame(width: 350)
+        .padding(11)
+        .frame(width: 352)
         .background(
             ZStack {
-                Color(red: 16/255, green: 18/255, blue: 24/255).opacity(0.92)
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                Color(nsColor: .windowBackgroundColor).opacity(0.4)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.25),
+                                Color.white.opacity(0.05),
+                                Color.clear
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.75
+                    )
             }
         )
-    }
-
-    private func serviceCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .padding(9)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.025))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.white.opacity(0.05), lineWidth: 0.8)
-                    )
-            )
     }
 
     private func timeString(_ date: Date) -> String {
