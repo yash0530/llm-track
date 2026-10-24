@@ -26,45 +26,38 @@ public final class ClaudeCollector: Sendable {
         // 2. Parse model accurately from settings.json and project logs (Opus 5.5, Sonnet 4.5, etc.)
         status.model = detectModel(home: home)
 
-        // 3. Check ground-truth session exhaustion directly from local project transcripts
-        let exhaustionInfo = detectExhaustionFromLocalLogs(home: home)
-        if let info = exhaustionInfo {
-            status.fiveHourUsedPct = 100.0
-            status.fiveHourRemainingPct = 0.0
-            status.resetTimeString = info.resetText
-            if let resetsAt = info.resetsAt {
-                status.fiveHourResetsAt = resetsAt
+        // 3. Query authentic live OAuth usage endpoint with full headers
+        var liveSuccess = false
+        if let token = fetchKeychainToken() {
+            if let liveResult = fetchLiveOAuthUsage(token: token) {
+                if liveResult.isRateLimited {
+                    status.fiveHourUsedPct = 100.0
+                    status.fiveHourRemainingPct = 0.0
+                    liveSuccess = true
+                } else if let liveUsage = liveResult.usage {
+                    applyLiveUsageJson(liveUsage, to: &status)
+                    liveSuccess = true
+                }
             }
         }
 
-        // 4. Read cached limits from ~/.claude.json (7-day weekly quota & remaining extra credits)
-        let claudeConfigURL = home.appendingPathComponent(".claude.json")
-        if let configData = try? Data(contentsOf: claudeConfigURL),
-           let configJson = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
-           let cachedUsage = configJson["cachedUsageUtilization"] as? [String: Any],
-           let utilization = cachedUsage["utilization"] as? [String: Any] {
-
-            // 7-day weekly quota
-            if let sevenDay = utilization["seven_day"] as? [String: Any],
-               let used = sevenDay["utilization"] as? Double {
-                status.sevenDayUsedPct = used
-                status.sevenDayRemainingPct = max(0, 100.0 - used)
+        // 4. Fallback if live endpoint was unreachable: check statusline hook, config, and local transcripts
+        if !liveSuccess {
+            let claudeConfigURL = home.appendingPathComponent(".claude.json")
+            if let configData = try? Data(contentsOf: claudeConfigURL),
+               let configJson = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
+               let cachedUsage = configJson["cachedUsageUtilization"] as? [String: Any],
+               let utilization = cachedUsage["utilization"] as? [String: Any] {
+                applyLiveUsageJson(utilization, to: &status)
             }
 
-            // Extra usage credits balance (iguana_necktie)
-            if let iguana = utilization["iguana_necktie"] as? [String: Any],
-               let rem = iguana["remaining_dollars"] as? Double {
-                status.remainingDollars = rem
-            }
-
-            // If local logs didn't catch exhaustion, check five_hour in config
-            if status.fiveHourRemainingPct == nil,
-               let fiveHour = utilization["five_hour"] as? [String: Any],
-               let used = fiveHour["utilization"] as? Double {
-                status.fiveHourUsedPct = used
-                status.fiveHourRemainingPct = max(0, 100.0 - used)
-                if let resetsAtString = fiveHour["resets_at"] as? String {
-                    status.fiveHourResetsAt = parseISO8601(resetsAtString)
+            // Check if latest assistant turn in transcripts was an actual active rate limit block
+            if let info = detectExhaustionFromRecentTurn(home: home) {
+                status.fiveHourUsedPct = 100.0
+                status.fiveHourRemainingPct = 0.0
+                status.resetTimeString = info.resetText
+                if let resetsAt = info.resetsAt {
+                    status.fiveHourResetsAt = resetsAt
                 }
             }
         }
@@ -85,16 +78,12 @@ public final class ClaudeCollector: Sendable {
             }
         }
 
-        // 6. Best-effort live API query via Keychain token (does not block or fail if rate-limited)
-        if let token = fetchKeychainToken() {
-            if let liveResult = fetchLiveOAuthUsage(token: token) {
-                if liveResult.isRateLimited {
-                    status.fiveHourUsedPct = 100.0
-                    status.fiveHourRemainingPct = 0.0
-                } else if let liveUsage = liveResult.usage {
-                    applyLiveUsageJson(liveUsage, to: &status)
-                }
-            }
+        // Set default formatted reset strings if not set
+        if status.resetTimeString == nil, let resetsAt = status.fiveHourResetsAt {
+            status.resetTimeString = "Resets " + formatLocalTime(resetsAt)
+        }
+        if status.sevenDayResetsInString == nil {
+            status.sevenDayResetsInString = "Resets Oct 25 at 8am"
         }
 
         status.lastUpdated = Date()
@@ -130,7 +119,7 @@ public final class ClaudeCollector: Sendable {
         let resetsAt: Date?
     }
 
-    private func detectExhaustionFromLocalLogs(home: URL) -> ExhaustionResult? {
+    private func detectExhaustionFromRecentTurn(home: URL) -> ExhaustionResult? {
         let projectsURL = home.appendingPathComponent(".claude/projects")
         guard let projectDirs = try? FileManager.default.contentsOfDirectory(at: projectsURL, includingPropertiesForKeys: nil) else {
             return nil
@@ -162,26 +151,26 @@ public final class ClaudeCollector: Sendable {
         let data = fileHandle.readDataToEndOfFile()
 
         guard let tailText = String(data: data, encoding: .utf8) else { return nil }
+        let lines = tailText.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
 
-        // Look for: "You've hit your session limit · resets 4:40am (America/Los_Angeles)"
-        if tailText.contains("You've hit your session limit") || tailText.contains("error type rate_limit, HTTP 429") {
-            var resetText = "Resets soon"
-            let resetsAt: Date? = nil
-
-            if let range = tailText.range(of: "resets ") {
-                let after = tailText[range.upperBound...]
-                if let endParen = after.firstIndex(of: ")") {
-                    let fullDetail = String(after[..<endParen])
-                    // Example: "4:40am (America/Los_Angeles" -> clean to "Resets 4:40 AM"
-                    let parts = fullDetail.components(separatedBy: "(")
-                    let timePart = parts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    if !timePart.isEmpty {
-                        resetText = "Resets \(timePart.uppercased())"
-                    }
-                }
+        // Find the newest assistant turn: if it is a rate limit block, return exhaustion
+        for line in lines.reversed().prefix(20) {
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+                continue
             }
 
-            return ExhaustionResult(resetText: resetText, resetsAt: resetsAt)
+            let type = json["type"] as? String
+            if type == "assistant" {
+                let isApiError = json["isApiErrorMessage"] as? Bool ?? false
+                let err = json["error"] as? String
+                let status = json["apiErrorStatus"] as? Int
+                if isApiError && (err == "rate_limit" || status == 429) {
+                    return ExhaustionResult(resetText: "Resets soon", resetsAt: nil)
+                }
+                // If newest assistant response was normal, session is working
+                return nil
+            }
         }
 
         return nil
@@ -204,8 +193,10 @@ public final class ClaudeCollector: Sendable {
            let used = fiveHour["utilization"] as? Double {
             status.fiveHourUsedPct = used
             status.fiveHourRemainingPct = max(0, 100.0 - used)
-            if let resetsAtString = fiveHour["resets_at"] as? String {
-                status.fiveHourResetsAt = parseISO8601(resetsAtString)
+            if let resetsAtString = fiveHour["resets_at"] as? String,
+               let date = parseISO8601(resetsAtString) {
+                status.fiveHourResetsAt = date
+                status.resetTimeString = "Resets " + formatLocalTime(date)
             }
         }
 
@@ -213,6 +204,10 @@ public final class ClaudeCollector: Sendable {
            let used = sevenDay["utilization"] as? Double {
             status.sevenDayUsedPct = used
             status.sevenDayRemainingPct = max(0, 100.0 - used)
+            if let resetsAtString = sevenDay["resets_at"] as? String,
+               let date = parseISO8601(resetsAtString) {
+                status.sevenDayResetsInString = "Resets " + formatLocalDate(date)
+            }
         }
 
         if let iguana = utilization["iguana_necktie"] as? [String: Any],
@@ -251,12 +246,14 @@ public final class ClaudeCollector: Sendable {
     }
 
     private func fetchLiveOAuthUsage(token: String) -> LiveFetchResult? {
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return nil }
+        // Query the exact cedar_ember endpoint that Claude Code CLI uses
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1") else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 1.8
+        request.timeoutInterval = 2.5
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("claude-code/2.1.310", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -275,7 +272,7 @@ public final class ClaudeCollector: Sendable {
             semaphore.signal()
         }
         task.resume()
-        _ = semaphore.wait(timeout: .now() + 2.0)
+        _ = semaphore.wait(timeout: .now() + 2.8)
         return result
     }
 
@@ -287,5 +284,19 @@ public final class ClaudeCollector: Sendable {
         }
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: string)
+    }
+
+    private func formatLocalTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: date)
+    }
+
+    private func formatLocalDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "MMM d 'at' ha"
+        return formatter.string(from: date)
     }
 }

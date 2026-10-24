@@ -26,9 +26,9 @@ public struct MenuBarTileView: View {
                     .fill(store.telemetry.agy.process.isRunning ? Color.cyan : Color.primary.opacity(0.20))
                     .frame(width: 4.8, height: 4.8)
 
-                // Kiro (Green if running)
+                // Kiro (Orange if credits exhausted, green if running, muted if idle)
                 Circle()
-                    .fill(store.telemetry.kiro.process.isRunning ? Color.green : Color.primary.opacity(0.20))
+                    .fill(kiroDotColor)
                     .frame(width: 4.8, height: 4.8)
 
                 // Local Qwen (Orange if server running)
@@ -48,6 +48,16 @@ public struct MenuBarTileView: View {
         }
         if store.telemetry.claude.process.isRunning {
             return Color.purple
+        }
+        return Color.primary.opacity(0.20)
+    }
+
+    private var kiroDotColor: Color {
+        if store.telemetry.kiro.isExhausted {
+            return Color.orange // Warning: Monthly credits exhausted
+        }
+        if store.telemetry.kiro.process.isRunning {
+            return Color.green
         }
         return Color.primary.opacity(0.20)
     }

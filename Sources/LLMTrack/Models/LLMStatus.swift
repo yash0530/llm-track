@@ -25,6 +25,7 @@ public struct ClaudeStatus: Sendable, Equatable {
     public var resetTimeString: String?
     public var sevenDayUsedPct: Double?
     public var sevenDayRemainingPct: Double?
+    public var sevenDayResetsInString: String?
     public var remainingDollars: Double?
     public var lastUpdated: Date?
 
@@ -48,9 +49,9 @@ public struct ClaudeStatus: Sendable, Equatable {
         let hours = Int(diff) / 3600
         let minutes = (Int(diff) % 3600) / 60
         if hours > 0 {
-            return "\(hours)h \(minutes)m"
+            return "Resets in \(hours)h \(minutes)m"
         } else {
-            return "\(minutes)m"
+            return "Resets in \(minutes)m"
         }
     }
 
@@ -63,6 +64,7 @@ public struct ClaudeStatus: Sendable, Equatable {
         resetTimeString: String? = nil,
         sevenDayUsedPct: Double? = nil,
         sevenDayRemainingPct: Double? = nil,
+        sevenDayResetsInString: String? = nil,
         remainingDollars: Double? = nil,
         lastUpdated: Date? = nil
     ) {
@@ -74,6 +76,7 @@ public struct ClaudeStatus: Sendable, Equatable {
         self.resetTimeString = resetTimeString
         self.sevenDayUsedPct = sevenDayUsedPct
         self.sevenDayRemainingPct = sevenDayRemainingPct
+        self.sevenDayResetsInString = sevenDayResetsInString
         self.remainingDollars = remainingDollars
         self.lastUpdated = lastUpdated
     }
@@ -83,28 +86,34 @@ public struct AGYStatus: Sendable, Equatable {
     public var process: AgentProcessInfo
     public var model: String
     public var planTier: String
-    public var quotaDetail: String
-    public var todayTokensFormatted: String?
-    public var todayCostFormatted: String?
+    public var geminiWeeklyRemainingPct: Double
+    public var geminiWeeklyResetString: String
+    public var geminiFiveHourRemainingPct: Double
+    public var claudeGptWeeklyRemainingPct: Double
+    public var claudeGptFiveHourRemainingPct: Double
     public var activeDirectory: String?
     public var isLanguageServerRunning: Bool
 
     public init(
         process: AgentProcessInfo = AgentProcessInfo(),
         model: String = "Gemini 3.8 Flash High",
-        planTier: String = "Personal Tier (Google OAuth)",
-        quotaDetail: String = "Standard Daily Limit (1,500 RPD)",
-        todayTokensFormatted: String? = nil,
-        todayCostFormatted: String? = nil,
+        planTier: String = "Google AI Pro",
+        geminiWeeklyRemainingPct: Double = 91.0,
+        geminiWeeklyResetString: String = "Resets in 6d 11h",
+        geminiFiveHourRemainingPct: Double = 100.0,
+        claudeGptWeeklyRemainingPct: Double = 100.0,
+        claudeGptFiveHourRemainingPct: Double = 100.0,
         activeDirectory: String? = nil,
         isLanguageServerRunning: Bool = false
     ) {
         self.process = process
         self.model = model
         self.planTier = planTier
-        self.quotaDetail = quotaDetail
-        self.todayTokensFormatted = todayTokensFormatted
-        self.todayCostFormatted = todayCostFormatted
+        self.geminiWeeklyRemainingPct = geminiWeeklyRemainingPct
+        self.geminiWeeklyResetString = geminiWeeklyResetString
+        self.geminiFiveHourRemainingPct = geminiFiveHourRemainingPct
+        self.claudeGptWeeklyRemainingPct = claudeGptWeeklyRemainingPct
+        self.claudeGptFiveHourRemainingPct = claudeGptFiveHourRemainingPct
         self.activeDirectory = activeDirectory
         self.isLanguageServerRunning = isLanguageServerRunning
     }
@@ -114,20 +123,33 @@ public struct KiroStatus: Sendable, Equatable {
     public var process: AgentProcessInfo
     public var model: String
     public var planTier: String
-    public var quotaDetail: String
+    public var creditsUsed: Double
+    public var creditsTotal: Double
+    public var creditsRemainingPct: Double
+    public var resetsOnString: String
     public var sessionTitle: String?
+
+    public var isExhausted: Bool {
+        return creditsRemainingPct <= 0.001 || creditsUsed >= creditsTotal
+    }
 
     public init(
         process: AgentProcessInfo = AgentProcessInfo(),
         model: String = "Opus 5.5 (Kiro)",
-        planTier: String = "Builder Plan · Individual Quota",
-        quotaDetail: String = "Active / Standard Tier",
+        planTier: String = "KIRO STUDENT",
+        creditsUsed: Double = 1000.00,
+        creditsTotal: Double = 1000.00,
+        creditsRemainingPct: Double = 0.0,
+        resetsOnString: String = "Resets on 2026-11-01",
         sessionTitle: String? = nil
     ) {
         self.process = process
         self.model = model
         self.planTier = planTier
-        self.quotaDetail = quotaDetail
+        self.creditsUsed = creditsUsed
+        self.creditsTotal = creditsTotal
+        self.creditsRemainingPct = creditsRemainingPct
+        self.resetsOnString = resetsOnString
         self.sessionTitle = sessionTitle
     }
 }

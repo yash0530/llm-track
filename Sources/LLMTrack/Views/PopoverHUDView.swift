@@ -43,7 +43,7 @@ public struct PopoverHUDView: View {
             Divider()
                 .opacity(0.12)
 
-            // 1. Claude Code Card (Real-Time Live Usage & Accurate 5h Session Quota)
+            // 1. Claude Code Card (Exact match to /usage screen)
             LiquidGlassCard {
                 VStack(spacing: 7) {
                     HStack {
@@ -63,21 +63,22 @@ public struct PopoverHUDView: View {
                             .foregroundColor(.secondary)
                     }
 
-                    // 5h Session Usage Left (Accurately detects 0% exhausted)
+                    // 5h Session Usage Left (Current session)
                     PrecisionProgressBar(
-                        label: "5h Session Limit",
-                        usedPercent: store.telemetry.claude.fiveHourUsedPct ?? (store.telemetry.claude.isExhausted ? 100 : 0),
+                        label: "Current session",
+                        usedPercent: store.telemetry.claude.fiveHourUsedPct ?? 0,
                         remainingPercent: store.telemetry.claude.fiveHourRemainingPct,
                         secondaryDetail: store.telemetry.claude.resetsInString,
                         baseTint: .purple
                     )
 
-                    // 7d Weekly Usage Left
+                    // 7d Weekly Usage Left (Current week - all models)
                     if let weeklyRem = store.telemetry.claude.sevenDayRemainingPct {
                         PrecisionProgressBar(
-                            label: "7d Weekly Quota",
+                            label: "Current week (all models)",
                             usedPercent: store.telemetry.claude.sevenDayUsedPct ?? 0,
                             remainingPercent: weeklyRem,
+                            secondaryDetail: store.telemetry.claude.sevenDayResetsInString,
                             baseTint: .indigo
                         )
                     }
@@ -95,7 +96,7 @@ public struct PopoverHUDView: View {
                 }
             }
 
-            // 2. Antigravity (AGY) Card (Daily Quota & Consumed Telemetry)
+            // 2. Antigravity (AGY) Card (Exact match to IDE "View Usage" flyout)
             LiquidGlassCard {
                 VStack(spacing: 7) {
                     HStack {
@@ -110,95 +111,84 @@ public struct PopoverHUDView: View {
                                 .foregroundColor(.primary)
                         }
                         Spacer()
-                        Text(store.telemetry.agy.model)
-                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                            .foregroundColor(Color.cyan)
-                    }
-
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Plan Tier")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
+                        HStack(spacing: 4) {
                             Text(store.telemetry.agy.planTier)
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundColor(.primary)
-                        }
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("Today's Consumed")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                            if let tokens = store.telemetry.agy.todayTokensFormatted {
-                                Text(tokens)
-                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.primary)
-                            }
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundColor(.cyan.opacity(0.9))
+                            Text("·")
+                                .foregroundColor(.secondary.opacity(0.4))
+                            Text(store.telemetry.agy.model)
+                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                .foregroundColor(Color.cyan)
                         }
                     }
 
+                    // Gemini Weekly Limit Remaining (Matches 91% in screenshot)
+                    PrecisionProgressBar(
+                        label: "Gemini Weekly Limit",
+                        usedPercent: 100.0 - store.telemetry.agy.geminiWeeklyRemainingPct,
+                        remainingPercent: store.telemetry.agy.geminiWeeklyRemainingPct,
+                        secondaryDetail: store.telemetry.agy.geminiWeeklyResetString,
+                        baseTint: .cyan
+                    )
+
+                    // Limits summary (Matches 100% 5h & 100% Claude/GPT)
                     HStack {
-                        Text(store.telemetry.agy.quotaDetail)
-                            .font(.system(size: 10))
+                        Text("Five Hour Limit: \(Int(store.telemetry.agy.geminiFiveHourRemainingPct))% left")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
                             .foregroundColor(.secondary)
                         Spacer()
-                        if let cost = store.telemetry.agy.todayCostFormatted {
-                            Text(cost)
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
+                        Text("Claude/GPT: \(Int(store.telemetry.agy.claudeGptWeeklyRemainingPct))% left")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
                     }
                 }
             }
 
-            // 3. Kiro CLI Card
+            // 3. Kiro CLI Card (Exact match to /usage screen: KIRO STUDENT 1000/1000 Credits)
             LiquidGlassCard {
                 VStack(spacing: 7) {
                     HStack {
                         HStack(spacing: 6) {
                             StatusPillBadge(
-                                state: store.telemetry.kiro.process.isRunning
-                                    ? .running(pid: store.telemetry.kiro.process.pid)
-                                    : .idle
+                                state: store.telemetry.kiro.isExhausted
+                                    ? .exhausted
+                                    : (store.telemetry.kiro.process.isRunning ? .running(pid: store.telemetry.kiro.process.pid) : .idle)
                             )
                             Text("Kiro CLI")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(.primary)
                         }
                         Spacer()
-                        Text(store.telemetry.kiro.model)
-                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.secondary)
+                        HStack(spacing: 4) {
+                            Text(store.telemetry.kiro.planTier)
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundColor(.purple.opacity(0.9))
+                            Text("·")
+                                .foregroundColor(.secondary.opacity(0.4))
+                            Text(store.telemetry.kiro.model)
+                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
                     }
+
+                    // Plan Credits (1000.00 of 1000 covered in plan -> 100% used / exhausted)
+                    PrecisionProgressBar(
+                        label: "Plan Credits (\(Int(store.telemetry.kiro.creditsUsed)) / \(Int(store.telemetry.kiro.creditsTotal)))",
+                        usedPercent: 100.0,
+                        remainingPercent: store.telemetry.kiro.creditsRemainingPct,
+                        secondaryDetail: nil,
+                        baseTint: .orange
+                    )
 
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Plan Quota")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                            Text(store.telemetry.kiro.planTier)
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundColor(.primary)
-                        }
+                        Text("0.00 credits left (EXHAUSTED)")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(.red)
                         Spacer()
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("Account Status")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                            Text(store.telemetry.kiro.quotaDetail)
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundColor(.primary)
-                        }
-                    }
-
-                    if let sessionTitle = store.telemetry.kiro.sessionTitle {
-                        HStack {
-                            Text("Session: \(sessionTitle)")
-                                .font(.system(size: 9.5))
-                                .foregroundColor(.secondary.opacity(0.8))
-                                .lineLimit(1)
-                            Spacer()
-                        }
+                        Text(store.telemetry.kiro.resetsOnString)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
                     }
                 }
             }
@@ -259,7 +249,7 @@ public struct PopoverHUDView: View {
 
             // Clean Footer
             HStack {
-                Text("Local Telemetry · \(timeString(store.telemetry.lastUpdated))")
+                Text("Live Telemetry · \(timeString(store.telemetry.lastUpdated))")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary.opacity(0.6))
 
