@@ -25,6 +25,7 @@ public struct ClaudeStatus: Sendable, Equatable {
     public var resetTimeString: String?
     public var sevenDayUsedPct: Double?
     public var sevenDayRemainingPct: Double?
+    public var sevenDayResetsAt: Date?
     public var sevenDayResetsInString: String?
     public var remainingDollars: Double?
     public var lastUpdated: Date?
@@ -40,18 +41,39 @@ public struct ClaudeStatus: Sendable, Equatable {
     }
 
     public var resetsInString: String? {
+        if let resetsAt = fiveHourResetsAt {
+            return Self.formatRelativeCountdown(resetsAt)
+        }
         if let resetStr = resetTimeString, !resetStr.isEmpty {
             return resetStr
         }
-        guard let resetsAt = fiveHourResetsAt else { return nil }
-        let diff = resetsAt.timeIntervalSince(Date())
+        return nil
+    }
+
+    public var weeklyResetsInString: String? {
+        if let resetsAt = sevenDayResetsAt {
+            return Self.formatRelativeCountdown(resetsAt)
+        }
+        if let resetStr = sevenDayResetsInString, !resetStr.isEmpty {
+            return resetStr
+        }
+        return nil
+    }
+
+    public static func formatRelativeCountdown(_ targetDate: Date) -> String {
+        let diff = targetDate.timeIntervalSince(Date())
         if diff <= 0 { return "Resetting" }
-        let hours = Int(diff) / 3600
-        let minutes = (Int(diff) % 3600) / 60
-        if hours > 0 {
+        let totalMinutes = Int(diff) / 60
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+
+        if days > 0 {
+            return "Resets in \(days)d \(hours)h"
+        } else if hours > 0 {
             return "Resets in \(hours)h \(minutes)m"
         } else {
-            return "Resets in \(minutes)m"
+            return "Resets in \(max(1, minutes))m"
         }
     }
 
@@ -64,6 +86,7 @@ public struct ClaudeStatus: Sendable, Equatable {
         resetTimeString: String? = nil,
         sevenDayUsedPct: Double? = nil,
         sevenDayRemainingPct: Double? = nil,
+        sevenDayResetsAt: Date? = nil,
         sevenDayResetsInString: String? = nil,
         remainingDollars: Double? = nil,
         lastUpdated: Date? = nil
@@ -76,6 +99,7 @@ public struct ClaudeStatus: Sendable, Equatable {
         self.resetTimeString = resetTimeString
         self.sevenDayUsedPct = sevenDayUsedPct
         self.sevenDayRemainingPct = sevenDayRemainingPct
+        self.sevenDayResetsAt = sevenDayResetsAt
         self.sevenDayResetsInString = sevenDayResetsInString
         self.remainingDollars = remainingDollars
         self.lastUpdated = lastUpdated

@@ -7,7 +7,7 @@ public final class ClaudeCollector: @unchecked Sendable {
 
     public init() {}
 
-    public func collect() -> ClaudeStatus {
+    public func collect(forceLive: Bool = false) -> ClaudeStatus {
         var status = ClaudeStatus()
 
         // 1. Process telemetry
@@ -56,11 +56,11 @@ public final class ClaudeCollector: @unchecked Sendable {
                     if let resetsAtNum = (fiveHour["resets_at"] as? NSNumber)?.doubleValue {
                         let date = Date(timeIntervalSince1970: resetsAtNum)
                         status.fiveHourResetsAt = date
-                        status.resetTimeString = "Resets " + formatLocalTime(date)
+                        status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
                     } else if let resetsAtStr = fiveHour["resets_at"] as? String,
                               let date = parseISO8601(resetsAtStr) {
                         status.fiveHourResetsAt = date
-                        status.resetTimeString = "Resets " + formatLocalTime(date)
+                        status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
                     }
                 }
 
@@ -71,20 +71,22 @@ public final class ClaudeCollector: @unchecked Sendable {
                     }
                     if let resetsAtNum = (sevenDay["resets_at"] as? NSNumber)?.doubleValue {
                         let date = Date(timeIntervalSince1970: resetsAtNum)
-                        status.sevenDayResetsInString = "Resets " + formatLocalDate(date)
+                        status.sevenDayResetsAt = date
+                        status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
                     } else if let resetsAtStr = sevenDay["resets_at"] as? String,
                               let date = parseISO8601(resetsAtStr) {
-                        status.sevenDayResetsInString = "Resets " + formatLocalDate(date)
+                        status.sevenDayResetsAt = date
+                        status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
                     }
                 }
             }
         }
 
-        // 5. Query live OAuth usage endpoint with throttling (> 60s) to avoid 429 telemetry rate limits
+        // 5. Query live OAuth usage endpoint with throttling (> 60s) unless forceLive is true
         if let token = fetchKeychainToken() {
-            var shouldFetch = false
+            var shouldFetch = forceLive
             Self.lock.lock()
-            if Date().timeIntervalSince(Self.lastLiveFetchTime) > 60.0 {
+            if forceLive || Date().timeIntervalSince(Self.lastLiveFetchTime) > 60.0 {
                 shouldFetch = true
                 Self.lastLiveFetchTime = Date()
             }
@@ -107,18 +109,22 @@ public final class ClaudeCollector: @unchecked Sendable {
         if let info = detectExhaustionFromRecentTurn(home: home) {
             status.fiveHourUsedPct = 100.0
             status.fiveHourRemainingPct = 0.0
-            status.resetTimeString = info.resetText
             if let resetsAt = info.resetsAt {
                 status.fiveHourResetsAt = resetsAt
+                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
+            } else if let existing = status.fiveHourResetsAt {
+                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(existing)
+            } else {
+                status.resetTimeString = info.resetText
             }
         }
 
-        // Set default formatted reset strings if still not set
+        // Set default formatted relative reset strings if still not set
         if status.resetTimeString == nil, let resetsAt = status.fiveHourResetsAt {
-            status.resetTimeString = "Resets " + formatLocalTime(resetsAt)
+            status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
         }
-        if status.sevenDayResetsInString == nil {
-            status.sevenDayResetsInString = "Resets Oct 25 at 8am"
+        if status.sevenDayResetsInString == nil, let resetsAt = status.sevenDayResetsAt {
+            status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(resetsAt)
         }
 
         status.lastUpdated = Date()
@@ -234,7 +240,7 @@ public final class ClaudeCollector: @unchecked Sendable {
             if let resetsAtString = fiveHour["resets_at"] as? String,
                let date = parseISO8601(resetsAtString) {
                 status.fiveHourResetsAt = date
-                status.resetTimeString = "Resets " + formatLocalTime(date)
+                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
             }
         }
 
@@ -244,7 +250,8 @@ public final class ClaudeCollector: @unchecked Sendable {
             status.sevenDayRemainingPct = max(0, 100.0 - used)
             if let resetsAtString = sevenDay["resets_at"] as? String,
                let date = parseISO8601(resetsAtString) {
-                status.sevenDayResetsInString = "Resets " + formatLocalDate(date)
+                status.sevenDayResetsAt = date
+                status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
             }
         }
 
@@ -313,19 +320,5 @@ public final class ClaudeCollector: @unchecked Sendable {
         }
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: string)
-    }
-
-    private func formatLocalTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.timeZone = TimeZone.current
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: date)
-    }
-
-    private func formatLocalDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.timeZone = TimeZone.current
-        formatter.dateFormat = "MMM d 'at' ha"
-        return formatter.string(from: date)
     }
 }

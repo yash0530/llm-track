@@ -29,12 +29,14 @@ public struct PopoverHUDView: View {
                 Spacer()
 
                 Button(action: {
-                    store.refresh()
+                    store.refresh(force: true)
                 }) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundColor(.secondary.opacity(0.75))
-                        .rotationEffect(.degrees(store.isRefreshing ? 360 : 0))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.85))
+                        .rotationEffect(.degrees(store.refreshAngle))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PlainButtonStyle())
             }
@@ -55,7 +57,7 @@ public struct PopoverHUDView: View {
                         Spacer()
                     }
 
-                    // Session Limit (5-Hour)
+                    // Session Limit (5-Hour) -> Resets in Xh Ym
                     PrecisionProgressBar(
                         label: "Session",
                         remainingPercent: store.telemetry.claude.fiveHourRemainingPct ?? 0,
@@ -63,12 +65,12 @@ public struct PopoverHUDView: View {
                         baseTint: Color(red: 0.65, green: 0.40, blue: 0.95)
                     )
 
-                    // Weekly Limit
+                    // Weekly Limit -> Resets in Xd Yh
                     if let weeklyRem = store.telemetry.claude.sevenDayRemainingPct {
                         PrecisionProgressBar(
                             label: "Weekly",
                             remainingPercent: weeklyRem,
-                            resetText: store.telemetry.claude.sevenDayResetsInString,
+                            resetText: store.telemetry.claude.weeklyResetsInString,
                             baseTint: Color(red: 0.38, green: 0.42, blue: 0.95)
                         )
                     }
@@ -98,7 +100,7 @@ public struct PopoverHUDView: View {
                         Spacer()
                     }
 
-                    // 5-Hour Limit Bar
+                    // 5-Hour Limit Bar -> Resets in Xh Ym
                     PrecisionProgressBar(
                         label: "5-Hour",
                         remainingPercent: store.telemetry.agy.geminiFiveHourRemainingPct,
@@ -106,7 +108,7 @@ public struct PopoverHUDView: View {
                         baseTint: Color(red: 0.25, green: 0.60, blue: 1.00)
                     )
 
-                    // Weekly Limit Bar
+                    // Weekly Limit Bar -> Resets in Xd Yh
                     PrecisionProgressBar(
                         label: "Weekly",
                         remainingPercent: store.telemetry.agy.geminiWeeklyRemainingPct,
