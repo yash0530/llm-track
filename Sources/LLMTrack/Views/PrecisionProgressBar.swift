@@ -85,6 +85,7 @@ public struct PrecisionProgressBar: View {
                         Capsule()
                             .fill(barGradient)
                             .frame(width: max(3.5, geo.size.width * CGFloat(remainingPercent / 100.0)), height: 3.5)
+                            .animation(.easeInOut(duration: 0.35), value: remainingPercent)
                     }
                 }
             }

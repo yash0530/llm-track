@@ -4,9 +4,8 @@ import Combine
 
 @MainActor
 public final class LLMTrackStore: ObservableObject {
-    @Published public var telemetry: LLMOverallTelemetry = LLMOverallTelemetry()
+    @Published public var telemetry: LLMOverallTelemetry
     @Published public var isRefreshing: Bool = false
-    @Published public var refreshAngle: Double = 0.0
 
     private let claudeCollector = ClaudeCollector()
     private let agyCollector = AGYCollector()
@@ -16,7 +15,20 @@ public final class LLMTrackStore: ObservableObject {
     private var timer: AnyCancellable?
 
     public init() {
-        refresh(force: true)
+        // Fast synchronous initial collect so telemetry is fully populated on load with zero glitch
+        let claude = claudeCollector.collect(forceLive: false)
+        let agy = agyCollector.collect()
+        let kiro = kiroCollector.collect()
+        let qwen = qwenCollector.collect()
+
+        self.telemetry = LLMOverallTelemetry(
+            claude: claude,
+            agy: agy,
+            kiro: kiro,
+            qwen: qwen,
+            lastUpdated: Date()
+        )
+
         startTimer()
     }
 
@@ -30,10 +42,8 @@ public final class LLMTrackStore: ObservableObject {
     }
 
     public func refresh(force: Bool = false) {
+        guard !isRefreshing else { return }
         isRefreshing = true
-        withAnimation(.easeInOut(duration: 0.6)) {
-            refreshAngle += 360
-        }
 
         Task.detached(priority: .userInitiated) { [claudeCollector, agyCollector, kiroCollector, qwenCollector] in
             let claude = claudeCollector.collect(forceLive: force)

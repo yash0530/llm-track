@@ -22,10 +22,10 @@ Built 100% in native Swift 6 and SwiftUI with an understated, compact **Liquid G
 | ╰───────────────────────────────────────────────────────╯ |
 | ╭───────────────────────────────────────────────────────╮ |
 | │ 🟢 Antigravity                                        │ |
-| │ 5-Hour             88% left · Resets in 4h 8m         │ |
-| │ [============================================-------] │ |
-| │ Weekly             88% left · Resets in 6d 10h        │ |
-| │ [============================================-------] │ |
+| │ 5-Hour             81% left · Resets in 3h 41m         │ |
+| │ [========================================-----------] │ |
+| │ Weekly             86% left · Resets in 6d 10h        │ |
+| │ [===========================================--------] │ |
 | ╰───────────────────────────────────────────────────────╯ |
 | ╭───────────────────────────────────────────────────────╮ |
 | │ 🟢 Kiro CLI                                           │ |
@@ -59,8 +59,9 @@ Built 100% in native Swift 6 and SwiftUI with an understated, compact **Liquid G
 - **Telemetry Protection**: Live OAuth requests to Anthropic's usage API are intelligently throttled with automated fallback to `~/.claude/statusline_state.json` and `~/.claude.json`.
 
 ### 2. Antigravity (AGY)
-- **5-Hour Limit**: Precision gauge matching the IDE View Usage flyout (`88% left · Resets in 4h 8m`).
-- **Weekly Limit**: Weekly request capacity gauge (`88% left · Resets in 6d 10h`).
+- **Live Connect-RPC Telemetry**: Dynamically extracts quota via Antigravity's local Go `language_server` Connect-RPC endpoint (`/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary`) with live CSRF token authentication.
+- **5-Hour Limit**: Precision gauge matching the IDE View Usage flyout (e.g. `81% left · Resets in 3h 41m`).
+- **Weekly Limit**: Weekly request capacity gauge (e.g. `86% left · Resets in 6d 10h`).
 - **Process Telemetry**: Live detection of the active Antigravity IDE and Language Server Hub.
 
 ### 3. Kiro CLI

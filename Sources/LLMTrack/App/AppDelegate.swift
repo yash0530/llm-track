@@ -28,8 +28,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup Popover with transient behavior (dismisses on click outside)
         popover = NSPopover()
         popover.behavior = .transient
-        popover.animates = true
-        popover.contentViewController = NSHostingController(rootView: PopoverHUDView(store: store))
+        popover.animates = false
+        popover.contentSize = NSSize(width: 336, height: 285)
+        let hostingController = NSHostingController(rootView: PopoverHUDView(store: store))
+        hostingController.preferredContentSize = NSSize(width: 336, height: 285)
+        popover.contentViewController = hostingController
     }
 
     @objc private func statusBarButtonClicked(_ sender: NSStatusBarButton) {
@@ -54,7 +57,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            store.refresh()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

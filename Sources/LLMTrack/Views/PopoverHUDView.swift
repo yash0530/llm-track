@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct PopoverHUDView: View {
     @ObservedObject var store: LLMTrackStore
+    @State private var spinDegrees: Double = 0.0
 
     public init(store: LLMTrackStore) {
         self.store = store
@@ -29,16 +30,20 @@ public struct PopoverHUDView: View {
                 Spacer()
 
                 Button(action: {
+                    withAnimation(.easeInOut(duration: 0.6)) {
+                        spinDegrees += 360
+                    }
                     store.refresh(force: true)
                 }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary.opacity(0.85))
-                        .rotationEffect(.degrees(store.refreshAngle))
+                        .foregroundColor(store.isRefreshing ? .primary : .secondary.opacity(0.85))
+                        .rotationEffect(.degrees(spinDegrees))
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PlainButtonStyle())
+                .disabled(store.isRefreshing)
             }
             .padding(.horizontal, 2)
             .padding(.bottom, 1)
