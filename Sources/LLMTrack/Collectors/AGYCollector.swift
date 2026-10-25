@@ -39,12 +39,11 @@ public final class AGYCollector: @unchecked Sendable {
     /// Serializes spawns so a forced refresh and a background refresh never run two servers at once.
     private static let headlessGate = NSLock()
 
-    /// Cached quota older than this triggers a headless refresh (kept well under 15s of
-    /// end-to-end staleness once poll interval and ~4s query time are added).
-    private static let staleInterval: TimeInterval = 7
+    /// Cached quota older than this triggers a background headless refresh.
+    private static let staleInterval: TimeInterval = 60
     /// Minimum gap between automatic headless attempts, so a failing query can't
     /// respawn the language server on every poll.
-    private static let headlessRetryInterval: TimeInterval = 10
+    private static let headlessRetryInterval: TimeInterval = 60
 
     private static let languageServerPath = "/Applications/Antigravity.app/Contents/Resources/bin/language_server"
     private static let quotaPath = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
