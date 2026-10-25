@@ -24,7 +24,8 @@ public final class LLMTrackStore: ObservableObject {
     public init() {
         // Fast synchronous initial collect so telemetry is fully populated on load with zero glitch
         let claude = claudeCollector.collect(forceLive: false)
-        let agy = agyCollector.collect()
+        // Headless query is skipped here (it can block ~3s); the refresh kicked off below handles stale caches.
+        let agy = agyCollector.collect(forceLive: false, allowHeadless: false)
         let kiro = kiroCollector.collect()
         let qwen = qwenCollector.collect()
 
@@ -37,6 +38,7 @@ public final class LLMTrackStore: ObservableObject {
         )
 
         startTimer()
+        refresh(force: false)
     }
 
     public func startTimer() {
@@ -54,7 +56,7 @@ public final class LLMTrackStore: ObservableObject {
 
         Task.detached(priority: .userInitiated) { [claudeCollector, agyCollector, kiroCollector, qwenCollector] in
             let claude = claudeCollector.collect(forceLive: force)
-            let agy = agyCollector.collect()
+            let agy = agyCollector.collect(forceLive: force)
             let kiro = kiroCollector.collect()
             let qwen = qwenCollector.collect()
 

@@ -1,12 +1,64 @@
 import Foundation
+import Darwin
+
+/// Persisted snapshot of the last quota response. Stores absolute reset timestamps
+/// (not formatted strings) so countdowns can be recomputed at any later time.
+public struct AGYQuotaCacheRecord: Codable, Sendable, Equatable {
+    public var geminiWeeklyRemainingFraction: Double
+    public var geminiWeeklyResetIso: String?
+    public var geminiFiveHourRemainingFraction: Double
+    public var geminiFiveHourResetIso: String?
+    public var claudeGptWeeklyRemainingFraction: Double
+    public var claudeGptFiveHourRemainingFraction: Double
+    public var updatedAt: Date
+
+    public init(
+        geminiWeeklyRemainingFraction: Double = 0.0,
+        geminiWeeklyResetIso: String? = nil,
+        geminiFiveHourRemainingFraction: Double = 0.0,
+        geminiFiveHourResetIso: String? = nil,
+        claudeGptWeeklyRemainingFraction: Double = 1.0,
+        claudeGptFiveHourRemainingFraction: Double = 1.0,
+        updatedAt: Date = Date()
+    ) {
+        self.geminiWeeklyRemainingFraction = geminiWeeklyRemainingFraction
+        self.geminiWeeklyResetIso = geminiWeeklyResetIso
+        self.geminiFiveHourRemainingFraction = geminiFiveHourRemainingFraction
+        self.geminiFiveHourResetIso = geminiFiveHourResetIso
+        self.claudeGptWeeklyRemainingFraction = claudeGptWeeklyRemainingFraction
+        self.claudeGptFiveHourRemainingFraction = claudeGptFiveHourRemainingFraction
+        self.updatedAt = updatedAt
+    }
+}
 
 public final class AGYCollector: @unchecked Sendable {
-    private static var cachedStatus: AGYStatus? = nil
+    private static var cachedRecord: AGYQuotaCacheRecord? = nil
+    private static var lastHeadlessAttempt: Date? = nil
     private static let lock = NSLock()
+
+    /// Disk cache older than this triggers a headless refresh when the IDE is closed.
+    private static let staleInterval: TimeInterval = 15 * 60
+    /// Minimum gap between automatic (non-forced) headless attempts, so a failing
+    /// query can't respawn the language server on every 8s poll.
+    private static let headlessRetryInterval: TimeInterval = 60
+
+    private static let languageServerPath = "/Applications/Antigravity.app/Contents/Resources/bin/language_server"
+    private static let quotaPath = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
 
     public init() {}
 
-    public func collect() -> AGYStatus {
+    private static var cacheFileURL: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("llm-track", isDirectory: true)
+            .appendingPathComponent("agy_quota_cache.json")
+    }
+
+    /// - Parameters:
+    ///   - forceLive: user-initiated refresh; permits a headless query even if the cache is fresh.
+    ///   - allowHeadless: set false for callers on the main thread that must not block (e.g. startup).
+    public func collect(forceLive: Bool = false, allowHeadless: Bool = true) -> AGYStatus {
         var status = AGYStatus()
 
         // 1. Process matching
@@ -52,36 +104,255 @@ public final class AGYCollector: @unchecked Sendable {
             status.planTier = "Google AI Pro"
         }
 
-        // 3. Query live language_server Connect-RPC endpoint
-        if let liveQuota = fetchLiveQuotaSummary() {
-            Self.lock.lock()
-            Self.cachedStatus = liveQuota
-            Self.lock.unlock()
+        // 3. Resolve quota: live IDE -> (IDE closed) disk/memory cache -> on-demand headless query
+        var record: AGYQuotaCacheRecord? = nil
 
-            status.geminiWeeklyRemainingPct = liveQuota.geminiWeeklyRemainingPct
-            status.geminiWeeklyResetString = liveQuota.geminiWeeklyResetString
-            status.geminiFiveHourRemainingPct = liveQuota.geminiFiveHourRemainingPct
-            status.geminiFiveHourResetString = liveQuota.geminiFiveHourResetString
-            status.claudeGptWeeklyRemainingPct = liveQuota.claudeGptWeeklyRemainingPct
-            status.claudeGptFiveHourRemainingPct = liveQuota.claudeGptFiveHourRemainingPct
+        if let live = fetchLiveQuotaSummary() {
+            record = live
+            saveDiskCache(live)
         } else {
-            // Fallback to cached quota if available
-            Self.lock.lock()
-            if let cached = Self.cachedStatus {
-                status.geminiWeeklyRemainingPct = cached.geminiWeeklyRemainingPct
-                status.geminiWeeklyResetString = cached.geminiWeeklyResetString
-                status.geminiFiveHourRemainingPct = cached.geminiFiveHourRemainingPct
-                status.geminiFiveHourResetString = cached.geminiFiveHourResetString
-                status.claudeGptWeeklyRemainingPct = cached.claudeGptWeeklyRemainingPct
-                status.claudeGptFiveHourRemainingPct = cached.claudeGptFiveHourRemainingPct
+            record = loadDiskCache()
+
+            if !hasLangServer && allowHeadless {
+                let isStale = record.map { Date().timeIntervalSince($0.updatedAt) > Self.staleInterval } ?? true
+                if forceLive || (isStale && shouldAttemptHeadlessAutomatically()) {
+                    Self.lock.lock()
+                    Self.lastHeadlessAttempt = Date()
+                    Self.lock.unlock()
+
+                    if let fresh = spawnHeadlessQuotaQuery() {
+                        record = fresh
+                        saveDiskCache(fresh)
+                    }
+                }
             }
-            Self.lock.unlock()
+        }
+
+        if let record = record {
+            Self.apply(record, to: &status)
         }
 
         return status
     }
 
-    private func fetchLiveQuotaSummary() -> AGYStatus? {
+    // MARK: - Disk cache
+
+    private func shouldAttemptHeadlessAutomatically() -> Bool {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        guard let last = Self.lastHeadlessAttempt else { return true }
+        return Date().timeIntervalSince(last) >= Self.headlessRetryInterval
+    }
+
+    /// Persists the record to `~/.config/llm-track/agy_quota_cache.json` and updates the in-memory copy.
+    private func saveDiskCache(_ record: AGYQuotaCacheRecord) {
+        Self.lock.lock()
+        Self.cachedRecord = record
+        Self.lock.unlock()
+
+        let url = Self.cacheFileURL
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(record).write(to: url, options: .atomic)
+        } catch {
+            // Cache is best-effort; the in-memory copy still works for this session.
+        }
+    }
+
+    /// Returns the freshest of the in-memory and on-disk records.
+    private func loadDiskCache() -> AGYQuotaCacheRecord? {
+        Self.lock.lock()
+        let memory = Self.cachedRecord
+        Self.lock.unlock()
+
+        var disk: AGYQuotaCacheRecord? = nil
+        if let data = try? Data(contentsOf: Self.cacheFileURL) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            disk = try? decoder.decode(AGYQuotaCacheRecord.self, from: data)
+        }
+
+        switch (memory, disk) {
+        case let (m?, d?): return m.updatedAt >= d.updatedAt ? m : d
+        case let (m?, nil): return m
+        case let (nil, d?):
+            Self.lock.lock()
+            Self.cachedRecord = d
+            Self.lock.unlock()
+            return d
+        default: return nil
+        }
+    }
+
+    // MARK: - Record -> status
+
+    /// Converts a record into display values, recomputing countdowns against the current time.
+    /// Windows whose reset time has passed are treated as replenished (100%).
+    static func apply(_ record: AGYQuotaCacheRecord, to status: inout AGYStatus, now: Date = Date()) {
+        let weeklyReset = parseISO(record.geminiWeeklyResetIso)
+        let fiveHourReset = parseISO(record.geminiFiveHourResetIso)
+
+        if let reset = weeklyReset, reset <= now {
+            status.geminiWeeklyRemainingPct = 100.0
+            status.geminiWeeklyResetString = "Quota refreshed"
+            status.geminiWeeklyResetsAt = nil
+        } else {
+            status.geminiWeeklyRemainingPct = clampPct(record.geminiWeeklyRemainingFraction)
+            status.geminiWeeklyResetsAt = weeklyReset
+            status.geminiWeeklyResetString = weeklyReset.map { ClaudeStatus.formatRelativeCountdown($0) } ?? "Reset time unknown"
+        }
+
+        if let reset = fiveHourReset, reset <= now {
+            status.geminiFiveHourRemainingPct = 100.0
+            status.geminiFiveHourResetString = "Quota refreshed"
+            status.geminiFiveHourResetsAt = nil
+        } else {
+            status.geminiFiveHourRemainingPct = clampPct(record.geminiFiveHourRemainingFraction)
+            status.geminiFiveHourResetsAt = fiveHourReset
+            status.geminiFiveHourResetString = fiveHourReset.map { ClaudeStatus.formatRelativeCountdown($0) } ?? "Reset time unknown"
+        }
+
+        status.claudeGptWeeklyRemainingPct = clampPct(record.claudeGptWeeklyRemainingFraction)
+        status.claudeGptFiveHourRemainingPct = clampPct(record.claudeGptFiveHourRemainingFraction)
+    }
+
+    private static func clampPct(_ fraction: Double) -> Double {
+        max(0.0, min(100.0, fraction * 100.0))
+    }
+
+    private static func parseISO(_ raw: String?) -> Date? {
+        guard let raw = raw, !raw.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: raw) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: raw)
+    }
+
+    // MARK: - Headless query
+
+    /// Launches Antigravity's bundled `language_server` standalone (no IDE UI), fetches the quota
+    /// summary, then terminates it. Blocking: ~2.5s typical, 3.5s max for the poll loop.
+    private func spawnHeadlessQuotaQuery() -> AGYQuotaCacheRecord? {
+        guard FileManager.default.isExecutableFile(atPath: Self.languageServerPath),
+              let port = Self.findFreePort() else { return nil }
+
+        let csrf = UUID().uuidString.lowercased()
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Self.languageServerPath)
+        process.arguments = [
+            "--standalone",
+            "--headless",
+            "--override_ide_name", "antigravity",
+            "--subclient_type", "hub",
+            "--override_ide_version", "2.26.0",
+            "--override_user_agent_name", "antigravity",
+            "--https_server_port", String(port),
+            "--csrf_token", csrf,
+            "--app_data_dir", "antigravity",
+            "--api_server_url", "https://generativelanguage.googleapis.com",
+            "--cloud_code_endpoint", "https://daily-cloudcode-pa.googleapis.com"
+        ]
+        // /dev/null avoids pipe-buffer hangs from a chatty child nobody is reading.
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        defer {
+            process.terminate()
+            // Escalate if SIGTERM is ignored so we never leak a 160MB background process.
+            let deadline = Date().addingTimeInterval(1.0)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(3.5)
+        while Date() < deadline {
+            guard process.isRunning else { return nil }
+            if let record = queryQuota(port: String(port), csrf: csrf) {
+                return record
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return nil
+    }
+
+    /// Asks the kernel for a free ephemeral loopback port by binding to port 0.
+    private static func findFreePort() -> Int? {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0 else { return nil }
+
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(fd, $0, &len)
+            }
+        }
+        guard named == 0 else { return nil }
+        return Int(UInt16(bigEndian: addr.sin_port))
+    }
+
+    /// POSTs RetrieveUserQuotaSummary to a language_server instance. Returns nil on any failure.
+    private func queryQuota(port: String, csrf: String) -> AGYQuotaCacheRecord? {
+        let curlProcess = Process()
+        curlProcess.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        curlProcess.arguments = [
+            "-k", "-s", "-m", "2", "-X", "POST",
+            "-H", "Content-Type: application/json",
+            "-H", "x-codeium-csrf-token: \(csrf)",
+            "-d", "{}",
+            "https://127.0.0.1:\(port)\(Self.quotaPath)"
+        ]
+        let curlPipe = Pipe()
+        curlProcess.standardOutput = curlPipe
+        curlProcess.standardError = FileHandle.nullDevice
+
+        do {
+            try curlProcess.run()
+        } catch {
+            return nil
+        }
+        let data = curlPipe.fileHandleForReading.readDataToEndOfFile()
+        curlProcess.waitUntilExit()
+
+        guard curlProcess.terminationStatus == 0,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let responseObj = json["response"] as? [String: Any],
+              let groups = responseObj["groups"] as? [[String: Any]] else {
+            return nil
+        }
+        return parseQuotaGroups(groups)
+    }
+
+    private func fetchLiveQuotaSummary() -> AGYQuotaCacheRecord? {
         // Step 1: Find language_server PID and CSRF token from running processes
         let psProcess = Process()
         psProcess.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -153,99 +424,56 @@ public final class AGYCollector: @unchecked Sendable {
 
         // Step 3: Query each port until successful response
         for port in ports {
-            let curlProcess = Process()
-            curlProcess.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-            curlProcess.arguments = [
-                "-k", "-s", "-m", "2", "-X", "POST",
-                "-H", "Content-Type: application/json",
-                "-H", "x-codeium-csrf-token: \(csrf)",
-                "-d", "{}",
-                "https://127.0.0.1:\(port)/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
-            ]
-            let curlPipe = Pipe()
-            curlProcess.standardOutput = curlPipe
-            curlProcess.standardError = Pipe()
-
-            do {
-                try curlProcess.run()
-                let curlData = curlPipe.fileHandleForReading.readDataToEndOfFile()
-                curlProcess.waitUntilExit()
-
-                if curlProcess.terminationStatus == 0,
-                   let json = try? JSONSerialization.jsonObject(with: curlData) as? [String: Any],
-                   let responseObj = json["response"] as? [String: Any],
-                   let groups = responseObj["groups"] as? [[String: Any]] {
-                    return parseQuotaGroups(groups)
-                }
-            } catch {
-                continue
+            if let record = queryQuota(port: port, csrf: csrf) {
+                return record
             }
         }
 
         return nil
     }
 
-    private func parseQuotaGroups(_ groups: [[String: Any]]) -> AGYStatus {
-        var status = AGYStatus()
+    private func parseQuotaGroups(_ groups: [[String: Any]]) -> AGYQuotaCacheRecord {
+        var record = AGYQuotaCacheRecord(updatedAt: Date())
 
         for group in groups {
             let groupName = (group["displayName"] as? String) ?? ""
             guard let buckets = group["buckets"] as? [[String: Any]] else { continue }
 
-            if groupName.localizedCaseInsensitiveContains("gemini") {
-                for bucket in buckets {
-                    let bucketId = (bucket["bucketId"] as? String) ?? ""
-                    let window = (bucket["window"] as? String) ?? ""
-                    let fraction = (bucket["remainingFraction"] as? NSNumber)?.doubleValue ?? 1.0
-                    let resetTimeStr = bucket["resetTime"] as? String
+            let isGemini = groupName.localizedCaseInsensitiveContains("gemini")
+            let isThirdParty = groupName.localizedCaseInsensitiveContains("claude") || groupName.localizedCaseInsensitiveContains("gpt")
+            guard isGemini || isThirdParty else { continue }
 
-                    let pct = max(0.0, min(100.0, fraction * 100.0))
-                    let resetDesc = formatResetTime(resetTimeStr)
+            for bucket in buckets {
+                let bucketId = (bucket["bucketId"] as? String) ?? ""
+                let window = (bucket["window"] as? String) ?? ""
+                let resetTimeStr = bucket["resetTime"] as? String
+                // Proto3 JSON omits zero-valued fields: a bucket that has a reset time but no
+                // remainingFraction is exhausted (0), not full.
+                let fraction = (bucket["remainingFraction"] as? NSNumber)?.doubleValue
+                    ?? (resetTimeStr == nil ? 1.0 : 0.0)
 
-                    if bucketId.contains("5h") || window == "5h" {
-                        status.geminiFiveHourRemainingPct = pct
-                        if let desc = resetDesc {
-                            status.geminiFiveHourResetString = desc
-                        }
-                    } else if bucketId.contains("weekly") || window == "weekly" {
-                        status.geminiWeeklyRemainingPct = pct
-                        if let desc = resetDesc {
-                            status.geminiWeeklyResetString = desc
-                        }
+                let isFiveHour = bucketId.contains("5h") || window == "5h"
+                let isWeekly = bucketId.contains("weekly") || window == "weekly"
+
+                if isGemini {
+                    if isFiveHour {
+                        record.geminiFiveHourRemainingFraction = fraction
+                        record.geminiFiveHourResetIso = resetTimeStr
+                    } else if isWeekly {
+                        record.geminiWeeklyRemainingFraction = fraction
+                        record.geminiWeeklyResetIso = resetTimeStr
                     }
-                }
-            } else if groupName.localizedCaseInsensitiveContains("claude") || groupName.localizedCaseInsensitiveContains("gpt") {
-                for bucket in buckets {
-                    let bucketId = (bucket["bucketId"] as? String) ?? ""
-                    let window = (bucket["window"] as? String) ?? ""
-                    let fraction = (bucket["remainingFraction"] as? NSNumber)?.doubleValue ?? 1.0
-
-                    let pct = max(0.0, min(100.0, fraction * 100.0))
-                    if bucketId.contains("5h") || window == "5h" {
-                        status.claudeGptFiveHourRemainingPct = pct
-                    } else if bucketId.contains("weekly") || window == "weekly" {
-                        status.claudeGptWeeklyRemainingPct = pct
+                } else {
+                    if isFiveHour {
+                        record.claudeGptFiveHourRemainingFraction = fraction
+                    } else if isWeekly {
+                        record.claudeGptWeeklyRemainingFraction = fraction
                     }
                 }
             }
         }
 
-        return status
-    }
-
-    private func formatResetTime(_ raw: String?) -> String? {
-        guard let raw = raw, !raw.isEmpty else { return nil }
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var targetDate = formatter.date(from: raw)
-        if targetDate == nil {
-            formatter.formatOptions = [.withInternetDateTime]
-            targetDate = formatter.date(from: raw)
-        }
-
-        guard let date = targetDate else { return nil }
-        return ClaudeStatus.formatRelativeCountdown(date)
+        return record
     }
 
     private func detectTierFromGlobalStorage() -> String? {

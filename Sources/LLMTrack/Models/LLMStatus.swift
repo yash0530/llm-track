@@ -112,8 +112,10 @@ public struct AGYStatus: Sendable, Equatable {
     public var planTier: String
     public var geminiWeeklyRemainingPct: Double
     public var geminiWeeklyResetString: String
+    public var geminiWeeklyResetsAt: Date?
     public var geminiFiveHourRemainingPct: Double
     public var geminiFiveHourResetString: String
+    public var geminiFiveHourResetsAt: Date?
     public var claudeGptWeeklyRemainingPct: Double
     public var claudeGptFiveHourRemainingPct: Double
     public var activeDirectory: String?
@@ -123,10 +125,12 @@ public struct AGYStatus: Sendable, Equatable {
         process: AgentProcessInfo = AgentProcessInfo(),
         model: String = "Gemini 3.8 Flash High",
         planTier: String = "Google AI Pro",
-        geminiWeeklyRemainingPct: Double = 88.0,
-        geminiWeeklyResetString: String = "Resets in 6d 10h",
-        geminiFiveHourRemainingPct: Double = 88.0,
-        geminiFiveHourResetString: String = "Resets in 4h 8m",
+        geminiWeeklyRemainingPct: Double = 0.0,
+        geminiWeeklyResetString: String = "Quota unavailable",
+        geminiWeeklyResetsAt: Date? = nil,
+        geminiFiveHourRemainingPct: Double = 0.0,
+        geminiFiveHourResetString: String = "Quota unavailable",
+        geminiFiveHourResetsAt: Date? = nil,
         claudeGptWeeklyRemainingPct: Double = 100.0,
         claudeGptFiveHourRemainingPct: Double = 100.0,
         activeDirectory: String? = nil,
@@ -137,8 +141,10 @@ public struct AGYStatus: Sendable, Equatable {
         self.planTier = planTier
         self.geminiWeeklyRemainingPct = geminiWeeklyRemainingPct
         self.geminiWeeklyResetString = geminiWeeklyResetString
+        self.geminiWeeklyResetsAt = geminiWeeklyResetsAt
         self.geminiFiveHourRemainingPct = geminiFiveHourRemainingPct
         self.geminiFiveHourResetString = geminiFiveHourResetString
+        self.geminiFiveHourResetsAt = geminiFiveHourResetsAt
         self.claudeGptWeeklyRemainingPct = claudeGptWeeklyRemainingPct
         self.claudeGptFiveHourRemainingPct = claudeGptFiveHourRemainingPct
         self.activeDirectory = activeDirectory
