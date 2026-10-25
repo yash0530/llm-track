@@ -40,7 +40,7 @@ public final class AGYCollector: @unchecked Sendable {
     private static let headlessGate = NSLock()
 
     /// Cached quota older than this triggers a background headless refresh.
-    private static let staleInterval: TimeInterval = 60
+    private static let staleInterval: TimeInterval = 5 * 60
     /// Minimum gap between automatic headless attempts, so a failing query can't
     /// respawn the language server on every poll.
     private static let headlessRetryInterval: TimeInterval = 60
