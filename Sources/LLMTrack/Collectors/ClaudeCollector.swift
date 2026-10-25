@@ -82,25 +82,24 @@ public final class ClaudeCollector: @unchecked Sendable {
             }
         }
 
-        // 5. Query live OAuth usage endpoint with throttling (> 60s) unless forceLive is true
+        // 5. Query live OAuth usage endpoint with throttling (> 10s) unless forceLive is true
         if let token = fetchKeychainToken() {
             var shouldFetch = forceLive
             Self.lock.lock()
-            if forceLive || Date().timeIntervalSince(Self.lastLiveFetchTime) > 60.0 {
+            if forceLive || Date().timeIntervalSince(Self.lastLiveFetchTime) > 10.0 {
                 shouldFetch = true
                 Self.lastLiveFetchTime = Date()
             }
             let cached = Self.cachedLiveUsage
             Self.lock.unlock()
 
-            if shouldFetch {
-                if let liveUsage = fetchLiveOAuthUsage(token: token) {
-                    Self.lock.lock()
-                    Self.cachedLiveUsage = liveUsage
-                    Self.lock.unlock()
-                    applyLiveUsageJson(liveUsage, to: &status)
-                }
+            if shouldFetch, let liveUsage = fetchLiveOAuthUsage(token: token) {
+                Self.lock.lock()
+                Self.cachedLiveUsage = liveUsage
+                Self.lock.unlock()
+                applyLiveUsageJson(liveUsage, to: &status)
             } else if let cached = cached {
+                // Not due for a fetch, or the fetch failed (e.g. rate limited): keep last good data.
                 applyLiveUsageJson(cached, to: &status)
             }
         }

@@ -34,13 +34,17 @@ public struct AGYQuotaCacheRecord: Codable, Sendable, Equatable {
 public final class AGYCollector: @unchecked Sendable {
     private static var cachedRecord: AGYQuotaCacheRecord? = nil
     private static var lastHeadlessAttempt: Date? = nil
+    private static var backgroundRefreshInFlight = false
     private static let lock = NSLock()
+    /// Serializes spawns so a forced refresh and a background refresh never run two servers at once.
+    private static let headlessGate = NSLock()
 
-    /// Disk cache older than this triggers a headless refresh when the IDE is closed.
-    private static let staleInterval: TimeInterval = 15 * 60
-    /// Minimum gap between automatic (non-forced) headless attempts, so a failing
-    /// query can't respawn the language server on every 8s poll.
-    private static let headlessRetryInterval: TimeInterval = 60
+    /// Cached quota older than this triggers a headless refresh (kept well under 15s of
+    /// end-to-end staleness once poll interval and ~4s query time are added).
+    private static let staleInterval: TimeInterval = 7
+    /// Minimum gap between automatic headless attempts, so a failing query can't
+    /// respawn the language server on every poll.
+    private static let headlessRetryInterval: TimeInterval = 10
 
     private static let languageServerPath = "/Applications/Antigravity.app/Contents/Resources/bin/language_server"
     private static let quotaPath = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
@@ -100,20 +104,26 @@ public final class AGYCollector: @unchecked Sendable {
             status.planTier = "Google AI Pro"
         }
 
-        // 3. Resolve quota: disk/memory cache, refreshed on demand via a headless
-        // language_server (CLI account) when forced or stale.
+        // 3. Resolve quota: disk/memory cache, refreshed via a headless language_server
+        // (CLI account). Forced refreshes block; stale-cache refreshes run in the background
+        // so the regular poll stays fast, unless there is no cache at all to show.
         var record = loadDiskCache()
 
         if allowHeadless {
-            let isStale = record.map { Date().timeIntervalSince($0.updatedAt) > Self.staleInterval } ?? true
-            if forceLive || (isStale && shouldAttemptHeadlessAutomatically()) {
-                Self.lock.lock()
-                Self.lastHeadlessAttempt = Date()
-                Self.lock.unlock()
-
-                if let fresh = spawnHeadlessQuotaQuery() {
-                    record = fresh
-                    saveDiskCache(fresh)
+            if forceLive {
+                if let fresh = refreshHeadlessSync() { record = fresh }
+            } else {
+                let isStale = record.map { Date().timeIntervalSince($0.updatedAt) > Self.staleInterval } ?? true
+                if isStale && claimBackgroundRefresh() {
+                    if record == nil {
+                        if let fresh = refreshHeadlessSync() { record = fresh }
+                        releaseBackgroundRefresh()
+                    } else {
+                        DispatchQueue.global(qos: .utility).async { [self] in
+                            _ = refreshHeadlessSync()
+                            releaseBackgroundRefresh()
+                        }
+                    }
                 }
             }
         }
@@ -125,14 +135,43 @@ public final class AGYCollector: @unchecked Sendable {
         return status
     }
 
-    // MARK: - Disk cache
+    // MARK: - Headless refresh coordination
 
-    private func shouldAttemptHeadlessAutomatically() -> Bool {
+    /// Atomically decides whether an automatic refresh may start now (single-flight + retry throttle).
+    private func claimBackgroundRefresh() -> Bool {
         Self.lock.lock()
         defer { Self.lock.unlock() }
-        guard let last = Self.lastHeadlessAttempt else { return true }
-        return Date().timeIntervalSince(last) >= Self.headlessRetryInterval
+        guard !Self.backgroundRefreshInFlight else { return false }
+        if let last = Self.lastHeadlessAttempt,
+           Date().timeIntervalSince(last) < Self.headlessRetryInterval {
+            return false
+        }
+        Self.backgroundRefreshInFlight = true
+        Self.lastHeadlessAttempt = Date()
+        return true
     }
+
+    private func releaseBackgroundRefresh() {
+        Self.lock.lock()
+        Self.backgroundRefreshInFlight = false
+        Self.lock.unlock()
+    }
+
+    /// Runs the headless query (blocking) and persists the result on success.
+    private func refreshHeadlessSync() -> AGYQuotaCacheRecord? {
+        Self.headlessGate.lock()
+        defer { Self.headlessGate.unlock() }
+
+        Self.lock.lock()
+        Self.lastHeadlessAttempt = Date()
+        Self.lock.unlock()
+
+        guard let fresh = spawnHeadlessQuotaQuery() else { return nil }
+        saveDiskCache(fresh)
+        return fresh
+    }
+
+    // MARK: - Disk cache
 
     /// Persists the record to `~/.config/llm-track/agy_quota_cache.json` and updates the in-memory copy.
     private func saveDiskCache(_ record: AGYQuotaCacheRecord) {

@@ -43,7 +43,7 @@ public final class LLMTrackStore: ObservableObject {
 
     public func startTimer() {
         timer?.cancel()
-        timer = Timer.publish(every: 8.0, on: .main, in: .common)
+        timer = Timer.publish(every: 4.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 self?.refresh(force: false)
