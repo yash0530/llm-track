@@ -39,16 +39,74 @@ public final class AGYCollector: @unchecked Sendable {
     /// Serializes spawns so a forced refresh and a background refresh never run two servers at once.
     private static let headlessGate = NSLock()
 
-    /// Cached quota older than this triggers a background headless refresh.
-    private static let staleInterval: TimeInterval = 5 * 60
-    /// Minimum gap between automatic headless attempts, so a failing query can't
-    /// respawn the language server on every poll.
+    /// Cached quota older than this triggers a background refresh. The direct API path costs
+    /// a couple of small HTTPS calls, so this is effectively "every poll".
+    private static let staleInterval: TimeInterval = 3
+    /// Minimum gap between headless `language_server` fallback spawns (the expensive path),
+    /// used only when the direct API path is unavailable (e.g. expired token).
     private static let headlessRetryInterval: TimeInterval = 60
+
+    private static let cloudCodeBase = "https://daily-cloudcode-pa.googleapis.com/v1internal:"
+    private static var cachedProjectId: String? = nil
+    private static let apiSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForResource = 8
+        config.httpMaximumConnectionsPerHost = 1
+        return URLSession(configuration: config)
+    }()
 
     private static let languageServerPath = "/Applications/Antigravity.app/Contents/Resources/bin/language_server"
     private static let quotaPath = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
 
-    public init() {}
+    public init() {
+        _ = Self.reapOrphansOnce
+    }
+
+    /// Runs once per process.
+    private static let reapOrphansOnce: Void = {
+        reapOrphanedHeadlessServers()
+    }()
+
+    /// Kills headless servers we spawned in a previous app run that never got terminated
+    /// (the app was killed mid-query so its `defer` cleanup never ran).
+    private static func reapOrphanedHeadlessServers() {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-A", "-o", "pid=,etime=,command="]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        ps.standardError = FileHandle.nullDevice
+        guard (try? ps.run()) != nil else { return }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        ps.waitUntilExit()
+        guard let output = String(data: data, encoding: .utf8) else { return }
+
+        for line in output.components(separatedBy: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count == 3,
+                  let pid = Int32(parts[0]),
+                  parts[2].hasPrefix(languageServerPath + " "),
+                  parts[2].contains("--standalone"),
+                  parts[2].contains("--headless"),
+                  elapsedSeconds(String(parts[1])) > 20 else { continue }
+            kill(pid, SIGTERM)
+        }
+    }
+
+    /// Parses `ps` etime: [[dd-]hh:]mm:ss
+    private static func elapsedSeconds(_ etime: String) -> Int {
+        var days = 0
+        var rest = etime
+        if let dash = etime.firstIndex(of: "-") {
+            days = Int(etime[..<dash]) ?? 0
+            rest = String(etime[etime.index(after: dash)...])
+        }
+        let nums = rest.split(separator: ":").compactMap { Int($0) }
+        var seconds = 0
+        for n in nums { seconds = seconds * 60 + n }
+        return days * 86400 + seconds
+    }
 
     private static var cacheFileURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -103,23 +161,24 @@ public final class AGYCollector: @unchecked Sendable {
             status.planTier = "Google AI Pro"
         }
 
-        // 3. Resolve quota: disk/memory cache, refreshed via a headless language_server
-        // (CLI account). Forced refreshes block; stale-cache refreshes run in the background
-        // so the regular poll stays fast, unless there is no cache at all to show.
+        // 3. Resolve quota: disk/memory cache, refreshed via the direct Cloud Code API (CLI
+        // account) with a headless language_server fallback. Forced refreshes block;
+        // stale-cache refreshes run in the background so the regular poll stays fast,
+        // unless there is no cache at all to show.
         var record = loadDiskCache()
 
         if allowHeadless {
             if forceLive {
-                if let fresh = refreshHeadlessSync() { record = fresh }
+                if let fresh = refreshQuotaSync(force: true) { record = fresh }
             } else {
                 let isStale = record.map { Date().timeIntervalSince($0.updatedAt) > Self.staleInterval } ?? true
                 if isStale && claimBackgroundRefresh() {
                     if record == nil {
-                        if let fresh = refreshHeadlessSync() { record = fresh }
+                        if let fresh = refreshQuotaSync(force: false) { record = fresh }
                         releaseBackgroundRefresh()
                     } else {
                         DispatchQueue.global(qos: .utility).async { [self] in
-                            _ = refreshHeadlessSync()
+                            _ = refreshQuotaSync(force: false)
                             releaseBackgroundRefresh()
                         }
                     }
@@ -134,19 +193,14 @@ public final class AGYCollector: @unchecked Sendable {
         return status
     }
 
-    // MARK: - Headless refresh coordination
+    // MARK: - Refresh coordination
 
-    /// Atomically decides whether an automatic refresh may start now (single-flight + retry throttle).
+    /// Atomically allows only one automatic refresh in flight at a time.
     private func claimBackgroundRefresh() -> Bool {
         Self.lock.lock()
         defer { Self.lock.unlock() }
         guard !Self.backgroundRefreshInFlight else { return false }
-        if let last = Self.lastHeadlessAttempt,
-           Date().timeIntervalSince(last) < Self.headlessRetryInterval {
-            return false
-        }
         Self.backgroundRefreshInFlight = true
-        Self.lastHeadlessAttempt = Date()
         return true
     }
 
@@ -156,10 +210,23 @@ public final class AGYCollector: @unchecked Sendable {
         Self.lock.unlock()
     }
 
-    /// Runs the headless query (blocking) and persists the result on success.
-    private func refreshHeadlessSync() -> AGYQuotaCacheRecord? {
+    /// Fetches quota (blocking) and persists it on success. Tries the cheap direct API first;
+    /// falls back to spawning the headless language_server (throttled unless `force`).
+    private func refreshQuotaSync(force: Bool) -> AGYQuotaCacheRecord? {
         Self.headlessGate.lock()
         defer { Self.headlessGate.unlock() }
+
+        if let fresh = fetchDirectQuota() {
+            saveDiskCache(fresh)
+            return fresh
+        }
+
+        Self.lock.lock()
+        let last = Self.lastHeadlessAttempt
+        Self.lock.unlock()
+        if !force, let last = last, Date().timeIntervalSince(last) < Self.headlessRetryInterval {
+            return nil
+        }
 
         Self.lock.lock()
         Self.lastHeadlessAttempt = Date()
@@ -168,6 +235,95 @@ public final class AGYCollector: @unchecked Sendable {
         guard let fresh = spawnHeadlessQuotaQuery() else { return nil }
         saveDiskCache(fresh)
         return fresh
+    }
+
+    // MARK: - Direct Cloud Code API
+
+    private final class HTTPResult: @unchecked Sendable {
+        var status = 0
+        var json: [String: Any]?
+    }
+
+    private static var tokenFileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".gemini/antigravity-cli/antigravity-oauth-token")
+    }
+
+    /// Reads the agy CLI's OAuth access token (read-only). Returns nil if missing or about to expire;
+    /// the CLI itself is responsible for refreshing it.
+    private func readAccessToken() -> String? {
+        guard let data = try? Data(contentsOf: Self.tokenFileURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["token"] as? [String: Any],
+              let access = token["access_token"] as? String, !access.isEmpty else { return nil }
+        if let expiry = token["expiry"] as? String,
+           let date = Self.parseISO(expiry),
+           date.timeIntervalSinceNow < 60 {
+            return nil
+        }
+        return access
+    }
+
+    private func postJSON(method: String, body: [String: Any], token: String) -> HTTPResult? {
+        guard let url = URL(string: Self.cloudCodeBase + method),
+              let payload = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("antigravity/2.26.0 darwin/arm64", forHTTPHeaderField: "User-Agent")
+
+        let result = HTTPResult()
+        let done = DispatchSemaphore(value: 0)
+        Self.apiSession.dataTask(with: request) { data, response, error in
+            if error == nil, let http = response as? HTTPURLResponse {
+                result.status = http.statusCode
+                if let data = data {
+                    result.json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                }
+            }
+            done.signal()
+        }.resume()
+        done.wait()
+        return result.status == 0 ? nil : result
+    }
+
+    private func loadProjectId(token: String) -> String? {
+        Self.lock.lock()
+        let cached = Self.cachedProjectId
+        Self.lock.unlock()
+        if let cached = cached { return cached }
+
+        let body: [String: Any] = ["metadata": ["ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"]]
+        guard let result = postJSON(method: "loadCodeAssist", body: body, token: token),
+              result.status == 200,
+              let project = result.json?["cloudaicompanionProject"] as? String, !project.isEmpty else { return nil }
+
+        Self.lock.lock()
+        Self.cachedProjectId = project
+        Self.lock.unlock()
+        return project
+    }
+
+    /// Two small HTTPS calls, no subprocess. Returns nil on any failure so the caller can fall back.
+    private func fetchDirectQuota() -> AGYQuotaCacheRecord? {
+        guard let token = readAccessToken(),
+              let project = loadProjectId(token: token) else { return nil }
+
+        guard let result = postJSON(method: "retrieveUserQuotaSummary", body: ["project": project], token: token) else {
+            return nil
+        }
+        if result.status == 200, let groups = result.json?["groups"] as? [[String: Any]] {
+            return parseQuotaGroups(groups)
+        }
+        if result.status == 400 || result.status == 403 || result.status == 404 {
+            // Project may be stale; re-resolve next time.
+            Self.lock.lock()
+            Self.cachedProjectId = nil
+            Self.lock.unlock()
+        }
+        return nil
     }
 
     // MARK: - Disk cache
@@ -252,7 +408,11 @@ public final class AGYCollector: @unchecked Sendable {
     }
 
     private static func parseISO(_ raw: String?) -> Date? {
-        guard let raw = raw, !raw.isEmpty else { return nil }
+        guard var raw = raw, !raw.isEmpty else { return nil }
+        // Trim fractional seconds to at most 3 digits (e.g. ".249038" -> ".249").
+        if let range = raw.range(of: #"\.\d{4,}"#, options: .regularExpression) {
+            raw.replaceSubrange(range, with: String(raw[range].prefix(4)))
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = formatter.date(from: raw) { return date }
