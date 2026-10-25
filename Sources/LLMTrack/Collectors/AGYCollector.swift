@@ -61,12 +61,10 @@ public final class AGYCollector: @unchecked Sendable {
     public func collect(forceLive: Bool = false, allowHeadless: Bool = true) -> AGYStatus {
         var status = AGYStatus()
 
-        // 1. Process matching
-        let matches = ProcessHelper.findProcesses(matching: ["agy ", "Antigravity", "language_server"])
+        // 1. Process matching — the agy CLI only. The Antigravity IDE runs under a different
+        // account, so its processes/language_server must not influence status or quota.
+        let matches = ProcessHelper.findProcesses(matching: ["agy "])
         let cliProcess = matches.first { $0.command.hasPrefix("agy ") || $0.command.contains("/agy ") }
-        let hasLangServer = matches.contains { $0.command.contains("language_server") || $0.command.contains("Antigravity") }
-
-        status.isLanguageServerRunning = hasLangServer
 
         if let proc = cliProcess {
             status.process = AgentProcessInfo(
@@ -91,8 +89,6 @@ public final class AGYCollector: @unchecked Sendable {
                 let dirPath = after.components(separatedBy: " ").first ?? ""
                 status.activeDirectory = URL(fileURLWithPath: dirPath).lastPathComponent
             }
-        } else if hasLangServer {
-            status.process = AgentProcessInfo(isRunning: true, pid: nil, cpuPercent: nil, command: "Antigravity IDE")
         } else {
             status.process = AgentProcessInfo(isRunning: false)
         }
@@ -104,26 +100,20 @@ public final class AGYCollector: @unchecked Sendable {
             status.planTier = "Google AI Pro"
         }
 
-        // 3. Resolve quota: live IDE -> (IDE closed) disk/memory cache -> on-demand headless query
-        var record: AGYQuotaCacheRecord? = nil
+        // 3. Resolve quota: disk/memory cache, refreshed on demand via a headless
+        // language_server (CLI account) when forced or stale.
+        var record = loadDiskCache()
 
-        if let live = fetchLiveQuotaSummary() {
-            record = live
-            saveDiskCache(live)
-        } else {
-            record = loadDiskCache()
+        if allowHeadless {
+            let isStale = record.map { Date().timeIntervalSince($0.updatedAt) > Self.staleInterval } ?? true
+            if forceLive || (isStale && shouldAttemptHeadlessAutomatically()) {
+                Self.lock.lock()
+                Self.lastHeadlessAttempt = Date()
+                Self.lock.unlock()
 
-            if !hasLangServer && allowHeadless {
-                let isStale = record.map { Date().timeIntervalSince($0.updatedAt) > Self.staleInterval } ?? true
-                if forceLive || (isStale && shouldAttemptHeadlessAutomatically()) {
-                    Self.lock.lock()
-                    Self.lastHeadlessAttempt = Date()
-                    Self.lock.unlock()
-
-                    if let fresh = spawnHeadlessQuotaQuery() {
-                        record = fresh
-                        saveDiskCache(fresh)
-                    }
+                if let fresh = spawnHeadlessQuotaQuery() {
+                    record = fresh
+                    saveDiskCache(fresh)
                 }
             }
         }
@@ -350,86 +340,6 @@ public final class AGYCollector: @unchecked Sendable {
             return nil
         }
         return parseQuotaGroups(groups)
-    }
-
-    private func fetchLiveQuotaSummary() -> AGYQuotaCacheRecord? {
-        // Step 1: Find language_server PID and CSRF token from running processes
-        let psProcess = Process()
-        psProcess.executableURL = URL(fileURLWithPath: "/bin/ps")
-        psProcess.arguments = ["-A", "-o", "pid,command"]
-        let psPipe = Pipe()
-        psProcess.standardOutput = psPipe
-        psProcess.standardError = Pipe()
-
-        var pidString: String? = nil
-        var csrfToken: String? = nil
-
-        do {
-            try psProcess.run()
-            let data = psPipe.fileHandleForReading.readDataToEndOfFile()
-            psProcess.waitUntilExit()
-
-            guard let output = String(data: data, encoding: .utf8) else { return nil }
-            for line in output.components(separatedBy: "\n") {
-                if line.contains("language_server") && line.contains("--csrf_token") {
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    if let firstSpace = trimmed.firstIndex(of: " ") {
-                        pidString = String(trimmed[..<firstSpace])
-                    }
-                    if let csrfRange = line.range(of: "--csrf_token") {
-                        let after = line[csrfRange.upperBound...].trimmingCharacters(in: .whitespaces)
-                        if let token = after.components(separatedBy: " ").first {
-                            csrfToken = token
-                        }
-                    }
-                    break
-                }
-            }
-        } catch {
-            return nil
-        }
-
-        guard let pid = pidString, let csrf = csrfToken else { return nil }
-
-        // Step 2: Find listening TCP ports for this PID
-        let lsofProcess = Process()
-        lsofProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        lsofProcess.arguments = ["-nP", "-a", "-p", pid, "-iTCP", "-sTCP:LISTEN"]
-        let lsofPipe = Pipe()
-        lsofProcess.standardOutput = lsofPipe
-        lsofProcess.standardError = Pipe()
-
-        var ports: [String] = []
-        do {
-            try lsofProcess.run()
-            let lsofData = lsofPipe.fileHandleForReading.readDataToEndOfFile()
-            lsofProcess.waitUntilExit()
-
-            guard let lsofOutput = String(data: lsofData, encoding: .utf8) else { return nil }
-            for line in lsofOutput.components(separatedBy: "\n") {
-                if let colonIdx = line.range(of: ":")?.upperBound,
-                   let listenIdx = line.range(of: " (LISTEN)")?.lowerBound,
-                   colonIdx < listenIdx {
-                    let portStr = String(line[colonIdx..<listenIdx]).trimmingCharacters(in: .whitespaces)
-                    if !portStr.isEmpty && !ports.contains(portStr) {
-                        ports.append(portStr)
-                    }
-                }
-            }
-        } catch {
-            return nil
-        }
-
-        guard !ports.isEmpty else { return nil }
-
-        // Step 3: Query each port until successful response
-        for port in ports {
-            if let record = queryQuota(port: port, csrf: csrf) {
-                return record
-            }
-        }
-
-        return nil
     }
 
     private func parseQuotaGroups(_ groups: [[String: Any]]) -> AGYQuotaCacheRecord {
