@@ -65,8 +65,10 @@ Built 100% in native Swift 6 and SwiftUI with an understated, compact **Liquid G
 - **Process Telemetry**: Live detection of the active Antigravity IDE and Language Server Hub.
 
 ### 3. Kiro CLI
-- **Monthly Plan Credits**: Live credit allowance tracking (`0% left · Resets Nov 1`).
-- **Process Telemetry**: Monitors background `kiro-cli` and `kiro-cli-term` terminal sessions.
+- **Monthly Plan Credits**: Live quota tracking via Amazon CodeWhisperer service (`GetUsageLimits`), reporting exact fractional credits used vs allowance (e.g. `99% left · Resets in 29d 4h`).
+- **OAuth Session Refresh**: Transparently detects and auto-refreshes social/external session tokens (`/refreshToken`) and persists refreshed tokens to `~/Library/Application Support/kiro-cli/data.sqlite3`.
+- **Persistent Disk Cache**: Caches telemetry to `~/.config/llm-track/kiro_quota_cache.json` with dynamic offline reset replenishment.
+- **Process Telemetry**: Monitors background `kiro-cli`, `kiro-cli-chat`, `@kiro/agent`, and `kiro-cli-term` terminal sessions.
 
 ### 4. Local Qwen 27B (`llm-serve` / LM Studio)
 - **Multi-Probe Detection**: Real-time probe of ports `8089` (Splash engine), `8790` (Anthropic proxy), `1234` (LM Studio), pidfiles (`~/.local/state/local-llm/*.pid`), and `splash serve-native` processes.

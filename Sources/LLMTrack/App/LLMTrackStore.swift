@@ -57,7 +57,7 @@ public final class LLMTrackStore: ObservableObject {
         Task.detached(priority: .userInitiated) { [claudeCollector, agyCollector, kiroCollector, qwenCollector] in
             let claude = claudeCollector.collect(forceLive: force)
             let agy = agyCollector.collect(forceLive: force)
-            let kiro = kiroCollector.collect()
+            let kiro = kiroCollector.collect(forceLive: force)
             let qwen = qwenCollector.collect()
 
             let updated = LLMOverallTelemetry(

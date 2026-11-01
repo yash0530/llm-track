@@ -2,7 +2,9 @@ import Foundation
 
 public final class ClaudeCollector: @unchecked Sendable {
     private static var lastLiveFetchTime: Date = .distantPast
+    private static var rateLimitBackoffUntil: Date = .distantPast
     private static var cachedLiveUsage: [String: Any]? = nil
+    private static var cachedLiveUsageDate: Date = .distantPast
     private static let lock = NSLock()
 
     public init() {}
@@ -11,8 +13,11 @@ public final class ClaudeCollector: @unchecked Sendable {
         var status = ClaudeStatus()
 
         // 1. Process telemetry
-        let matches = ProcessHelper.findProcesses(matching: ["claude "])
-        let primaryProcess = matches.first { $0.command.hasPrefix("claude ") || $0.command.contains("/claude ") } ?? matches.first
+        let matches = ProcessHelper.findProcesses(matching: ["claude ", "/claude", "claude-code"])
+        let primaryProcess = matches.first { m in
+            let cmd = m.command.lowercased()
+            return cmd.hasPrefix("claude ") || cmd.hasPrefix("claude") || cmd.contains("/claude ") || cmd.hasSuffix("/claude")
+        } ?? matches.first
 
         if let proc = primaryProcess {
             status.process = AgentProcessInfo(
@@ -30,7 +35,7 @@ public final class ClaudeCollector: @unchecked Sendable {
         // 2. Parse model accurately from settings.json or default
         status.model = detectModel(home: home)
 
-        // 3. Read cached utilization from ~/.claude.json (provides five_hour, seven_day, and iguana_necktie / extra credits)
+        // 3. Read cached utilization from ~/.claude.json (provides baseline five_hour, seven_day, and iguana_necktie / extra credits)
         let claudeConfigURL = home.appendingPathComponent(".claude.json")
         if let configData = try? Data(contentsOf: claudeConfigURL),
            let configJson = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
@@ -39,7 +44,7 @@ public final class ClaudeCollector: @unchecked Sendable {
             applyLiveUsageJson(utilization, to: &status)
         }
 
-        // 4. Read active statusline_state.json if available (written on every Claude turn)
+        // 4. Read active statusline_state.json if available (written locally by Claude on every turn)
         let statuslineURL = home.appendingPathComponent(".claude/statusline_state.json")
         if let slData = try? Data(contentsOf: statuslineURL),
            let slJson = try? JSONSerialization.jsonObject(with: slData) as? [String: Any] {
@@ -82,25 +87,59 @@ public final class ClaudeCollector: @unchecked Sendable {
             }
         }
 
-        // 5. Query live OAuth usage endpoint with throttling (> 10s) unless forceLive is true
+        // 5. Query live OAuth usage endpoint with safe interval (>= 60s) and 429 backoff
         if let token = fetchKeychainToken() {
-            var shouldFetch = forceLive
+            var shouldFetch = false
+            let now = Date()
+
             Self.lock.lock()
-            if forceLive || Date().timeIntervalSince(Self.lastLiveFetchTime) > 10.0 {
+            if forceLive {
+                // If user forced refresh, allow it as long as we're not hammering within 3 seconds
+                if now.timeIntervalSince(Self.lastLiveFetchTime) >= 3.0 {
+                    shouldFetch = true
+                    Self.lastLiveFetchTime = now
+                }
+            } else if now >= Self.rateLimitBackoffUntil && now.timeIntervalSince(Self.lastLiveFetchTime) >= 60.0 {
                 shouldFetch = true
-                Self.lastLiveFetchTime = Date()
+                Self.lastLiveFetchTime = now
             }
             let cached = Self.cachedLiveUsage
             Self.lock.unlock()
 
-            if shouldFetch, let liveUsage = fetchLiveOAuthUsage(token: token) {
-                Self.lock.lock()
-                Self.cachedLiveUsage = liveUsage
-                Self.lock.unlock()
-                applyLiveUsageJson(liveUsage, to: &status)
-            } else if let cached = cached {
-                // Not due for a fetch, or the fetch failed (e.g. rate limited): keep last good data.
+            if shouldFetch {
+                let fetchResult = fetchLiveOAuthUsage(token: token)
+                if let liveUsage = fetchResult.json {
+                    Self.lock.lock()
+                    Self.cachedLiveUsage = liveUsage
+                    Self.cachedLiveUsageDate = Date()
+                    Self.rateLimitBackoffUntil = .distantPast
+                    Self.lock.unlock()
+                    applyLiveUsageJson(liveUsage, to: &status)
+                } else {
+                    Self.lock.lock()
+                    if fetchResult.statusCode == 429 {
+                        let retrySec = fetchResult.retryAfter ?? 60.0
+                        Self.rateLimitBackoffUntil = Date().addingTimeInterval(max(30.0, retrySec))
+                    } else {
+                        Self.rateLimitBackoffUntil = Date().addingTimeInterval(30.0)
+                    }
+                    Self.lock.unlock()
+                    // If local files had no rate limit numbers at all, use cached as last resort
+                    if status.fiveHourRemainingPct == nil, let cached = cached {
+                        applyLiveUsageJson(cached, to: &status)
+                    }
+                }
+            } else if status.fiveHourRemainingPct == nil, let cached = cached {
+                // Not due for a fetch and local files had no rate limits: use cached as fallback
                 applyLiveUsageJson(cached, to: &status)
+            }
+
+            // Ensure remainingDollars is filled if missing from statusline
+            if status.remainingDollars == nil, let cached = cached {
+                if let iguana = cached["iguana_necktie"] as? [String: Any],
+                   let rem = (iguana["remaining_dollars"] as? NSNumber)?.doubleValue {
+                    status.remainingDollars = rem
+                }
             }
         }
 
@@ -186,15 +225,15 @@ public final class ClaudeCollector: @unchecked Sendable {
         defer { try? fileHandle.close() }
 
         let fileSize = fileHandle.seekToEndOfFile()
-        let readLength = min(fileSize, 65536)
+        let readLength = min(fileSize, 131072) // Read up to 128KB tail
         fileHandle.seek(toFileOffset: fileSize - readLength)
         let data = fileHandle.readDataToEndOfFile()
 
         guard let tailText = String(data: data, encoding: .utf8) else { return nil }
         let lines = tailText.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
 
-        // Find the newest assistant turn: if it is a rate limit block, return exhaustion
-        for line in lines.reversed().prefix(20) {
+        // Find the newest assistant turn, scanning through recent user or queue-operation items
+        for line in lines.reversed().prefix(200) {
             guard let lineData = line.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
                 continue
@@ -202,13 +241,35 @@ public final class ClaudeCollector: @unchecked Sendable {
 
             let type = json["type"] as? String
             if type == "assistant" {
-                let isApiError = json["isApiErrorMessage"] as? Bool ?? false
+                let isApiError = (json["isApiErrorMessage"] as? Bool) ?? false
                 let err = json["error"] as? String
                 let status = json["apiErrorStatus"] as? Int
-                if isApiError && (err == "rate_limit" || status == 429) {
-                    return ExhaustionResult(resetText: "Resets soon", resetsAt: nil)
+                let apiError = json["apiError"] as? String
+
+                if isApiError || err == "rate_limit" || status == 429 || apiError == "usage_limit_reached" {
+                    var resetsAtDate: Date? = nil
+
+                    if let quotaLimits = json["quotaLimits"] as? [String: Any] {
+                        if let num = (quotaLimits["resetsAt"] as? NSNumber)?.doubleValue ?? (quotaLimits["resets_at"] as? NSNumber)?.doubleValue {
+                            resetsAtDate = Date(timeIntervalSince1970: num)
+                        } else if let str = (quotaLimits["resetsAt"] as? String) ?? (quotaLimits["resets_at"] as? String) {
+                            resetsAtDate = parseISO8601(str)
+                        }
+                    }
+
+                    if resetsAtDate == nil, let apiParams = json["apiErrorParams"] as? [String: Any],
+                       let rateLimitInfo = apiParams["rate_limit_info"] as? [String: Any] {
+                        if let num = (rateLimitInfo["resetsAt"] as? NSNumber)?.doubleValue ?? (rateLimitInfo["resets_at"] as? NSNumber)?.doubleValue {
+                            resetsAtDate = Date(timeIntervalSince1970: num)
+                        } else if let str = (rateLimitInfo["resetsAt"] as? String) ?? (rateLimitInfo["resets_at"] as? String) {
+                            resetsAtDate = parseISO8601(str)
+                        }
+                    }
+
+                    return ExhaustionResult(resetText: "Resets soon", resetsAt: resetsAtDate)
                 }
-                // If newest assistant response was normal, session is working
+
+                // If newest assistant response was normal, session was working
                 return nil
             }
         }
@@ -240,6 +301,10 @@ public final class ClaudeCollector: @unchecked Sendable {
                let date = parseISO8601(resetsAtString) {
                 status.fiveHourResetsAt = date
                 status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
+            } else if let resetsAtNum = (fiveHour["resets_at"] as? NSNumber)?.doubleValue {
+                let date = Date(timeIntervalSince1970: resetsAtNum)
+                status.fiveHourResetsAt = date
+                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
             }
         }
 
@@ -249,6 +314,10 @@ public final class ClaudeCollector: @unchecked Sendable {
             status.sevenDayRemainingPct = max(0, 100.0 - used)
             if let resetsAtString = sevenDay["resets_at"] as? String,
                let date = parseISO8601(resetsAtString) {
+                status.sevenDayResetsAt = date
+                status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
+            } else if let resetsAtNum = (sevenDay["resets_at"] as? NSNumber)?.doubleValue {
+                let date = Date(timeIntervalSince1970: resetsAtNum)
                 status.sevenDayResetsAt = date
                 status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
             }
@@ -284,31 +353,47 @@ public final class ClaudeCollector: @unchecked Sendable {
         }
     }
 
-    private func fetchLiveOAuthUsage(token: String) -> [String: Any]? {
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1") else { return nil }
+    private struct LiveUsageFetchResult {
+        let json: [String: Any]?
+        let statusCode: Int
+        let retryAfter: Double?
+    }
+
+    private func fetchLiveOAuthUsage(token: String) -> LiveUsageFetchResult {
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1") else {
+            return LiveUsageFetchResult(json: nil, statusCode: 0, retryAfter: nil)
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 2.5
+        request.timeoutInterval = 4.0
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("claude-code/2.1.310", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let semaphore = DispatchSemaphore(value: 0)
-        var result: [String: Any]?
+        var resultJson: [String: Any]?
+        var statusCode = 0
+        var retryAfter: Double?
 
         let task = URLSession.shared.dataTask(with: request) { data, response, _ in
-            if let http = response as? HTTPURLResponse,
-               (200...299).contains(http.statusCode),
-               let data = data,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                result = json
+            if let http = response as? HTTPURLResponse {
+                statusCode = http.statusCode
+                if let retryHeader = http.value(forHTTPHeaderField: "Retry-After"),
+                   let sec = Double(retryHeader) {
+                    retryAfter = sec
+                }
+                if (200...299).contains(http.statusCode),
+                   let data = data,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    resultJson = json
+                }
             }
             semaphore.signal()
         }
         task.resume()
-        _ = semaphore.wait(timeout: .now() + 2.8)
-        return result
+        _ = semaphore.wait(timeout: .now() + 4.5)
+        return LiveUsageFetchResult(json: resultJson, statusCode: statusCode, retryAfter: retryAfter)
     }
 
     private func parseISO8601(_ string: String) -> Date? {

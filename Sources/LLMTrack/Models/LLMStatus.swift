@@ -160,6 +160,7 @@ public struct KiroStatus: Sendable, Equatable {
     public var creditsTotal: Double
     public var creditsRemainingPct: Double
     public var resetsOnString: String
+    public var resetsAt: Date?
     public var sessionTitle: String?
 
     public var isExhausted: Bool {
@@ -168,12 +169,13 @@ public struct KiroStatus: Sendable, Equatable {
 
     public init(
         process: AgentProcessInfo = AgentProcessInfo(),
-        model: String = "Opus 5.5 (Kiro)",
+        model: String = "Opus 5.5",
         planTier: String = "KIRO STUDENT",
-        creditsUsed: Double = 1000.00,
+        creditsUsed: Double = 0.0,
         creditsTotal: Double = 1000.00,
-        creditsRemainingPct: Double = 0.0,
-        resetsOnString: String = "Resets on 2026-11-01",
+        creditsRemainingPct: Double = 100.0,
+        resetsOnString: String = "Resets Dec 1",
+        resetsAt: Date? = nil,
         sessionTitle: String? = nil
     ) {
         self.process = process
@@ -183,6 +185,7 @@ public struct KiroStatus: Sendable, Equatable {
         self.creditsTotal = creditsTotal
         self.creditsRemainingPct = creditsRemainingPct
         self.resetsOnString = resetsOnString
+        self.resetsAt = resetsAt
         self.sessionTitle = sessionTitle
     }
 }

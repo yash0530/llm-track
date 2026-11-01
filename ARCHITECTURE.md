@@ -61,6 +61,7 @@ flowchart TD
     ClaudeCol --> ClaudeState
     AGYCol --> AGYRPC
     KiroCol --> KiroDB
+    KiroCol --> CodeWhispererAPI["Amazon CodeWhisperer Service<br/>GetUsageLimits (Live API)"]
     QwenCol --> LocalLLM
 ```
 
@@ -126,6 +127,13 @@ stateDiagram-v2
         Action: Exec llm-serve stop
     }
 ```
+
+### 2.4 Kiro CLI Live CodeWhisperer Quota & Token Lifecycle
+Kiro CLI authenticates through AWS / CodeWhisperer infrastructure:
+1. **Credentials & Profile**: Stored in `~/Library/Application Support/kiro-cli/data.sqlite3` (`auth_kv` table, key `kirocli:social:token` / `kirocli:odic:token`).
+2. **Automated Token Refresh**: If an access token expires, LLMTrack queries `https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken`, acquires a new bearer token, and writes back the updated credentials to `data.sqlite3`.
+3. **Authoritative Quota Query**: Sends a signed POST request to `https://codewhisperer.us-east-1.amazonaws.com` targeting `AmazonCodeWhispererService.GetUsageLimits`, returning precise invocation/credit usage (`usageBreakdownList`), monthly limit ceilings, and Unix epoch reset timestamps.
+4. **Persistent Disk Cache**: Cached to `~/.config/llm-track/kiro_quota_cache.json`. When a new monthly cycle elapses offline, the quota automatically replenishes to 100%.
 
 ---
 
