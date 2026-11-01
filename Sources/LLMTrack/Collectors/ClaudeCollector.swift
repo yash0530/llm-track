@@ -1,11 +1,30 @@
 import Foundation
 
 public final class ClaudeCollector: @unchecked Sendable {
+    private struct ClaudeDiskCache: Codable {
+        let fiveHourUsedPct: Double?
+        let fiveHourRemainingPct: Double?
+        let fiveHourResetsAt: Date?
+        let sevenDayUsedPct: Double?
+        let sevenDayRemainingPct: Double?
+        let sevenDayResetsAt: Date?
+        let remainingDollars: Double?
+        let updatedAt: Date
+    }
+
     private static var lastLiveFetchTime: Date = .distantPast
     private static var rateLimitBackoffUntil: Date = .distantPast
     private static var cachedLiveUsage: [String: Any]? = nil
     private static var cachedLiveUsageDate: Date = .distantPast
     private static let lock = NSLock()
+
+    private static var cacheFileURL: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("llm-track", isDirectory: true)
+            .appendingPathComponent("claude_quota_cache.json")
+    }
 
     public init() {}
 
@@ -32,62 +51,30 @@ public final class ClaudeCollector: @unchecked Sendable {
 
         let home = FileManager.default.homeDirectoryForCurrentUser
 
-        // 2. Parse model accurately from settings.json or default
+        // 2. Parse model accurately from settings.json or statusline
         status.model = detectModel(home: home)
 
-        // 3. Read cached utilization from ~/.claude.json (provides baseline five_hour, seven_day, and iguana_necktie / extra credits)
-        let claudeConfigURL = home.appendingPathComponent(".claude.json")
-        if let configData = try? Data(contentsOf: claudeConfigURL),
-           let configJson = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
-           let cachedUsage = configJson["cachedUsageUtilization"] as? [String: Any],
-           let utilization = cachedUsage["utilization"] as? [String: Any] {
-            applyLiveUsageJson(utilization, to: &status)
+        let statuslineURL = home.appendingPathComponent(".claude/statusline_state.json")
+        var statuslineData: [String: Any]? = nil
+        var statuslineModDate: Date = .distantPast
+
+        if let values = try? statuslineURL.resourceValues(forKeys: [.contentModificationDateKey]),
+           let modDate = values.contentModificationDate {
+            statuslineModDate = modDate
         }
 
-        // 4. Read active statusline_state.json if available (written locally by Claude on every turn)
-        let statuslineURL = home.appendingPathComponent(".claude/statusline_state.json")
         if let slData = try? Data(contentsOf: statuslineURL),
            let slJson = try? JSONSerialization.jsonObject(with: slData) as? [String: Any] {
+            statuslineData = slJson
             if let modelObj = slJson["model"] as? [String: Any],
                let name = modelObj["display_name"] as? String, !name.isEmpty {
                 status.model = formatModelName(name)
             }
-            if let rateLimits = slJson["rate_limits"] as? [String: Any] {
-                if let fiveHour = rateLimits["five_hour"] as? [String: Any] {
-                    if let usedPct = (fiveHour["used_percentage"] as? NSNumber)?.doubleValue {
-                        status.fiveHourUsedPct = usedPct
-                        status.fiveHourRemainingPct = max(0, 100.0 - usedPct)
-                    }
-                    if let resetsAtNum = (fiveHour["resets_at"] as? NSNumber)?.doubleValue {
-                        let date = Date(timeIntervalSince1970: resetsAtNum)
-                        status.fiveHourResetsAt = date
-                        status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
-                    } else if let resetsAtStr = fiveHour["resets_at"] as? String,
-                              let date = parseISO8601(resetsAtStr) {
-                        status.fiveHourResetsAt = date
-                        status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
-                    }
-                }
-
-                if let sevenDay = rateLimits["seven_day"] as? [String: Any] {
-                    if let usedPct = (sevenDay["used_percentage"] as? NSNumber)?.doubleValue {
-                        status.sevenDayUsedPct = usedPct
-                        status.sevenDayRemainingPct = max(0, 100.0 - usedPct)
-                    }
-                    if let resetsAtNum = (sevenDay["resets_at"] as? NSNumber)?.doubleValue {
-                        let date = Date(timeIntervalSince1970: resetsAtNum)
-                        status.sevenDayResetsAt = date
-                        status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
-                    } else if let resetsAtStr = sevenDay["resets_at"] as? String,
-                              let date = parseISO8601(resetsAtStr) {
-                        status.sevenDayResetsAt = date
-                        status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
-                    }
-                }
-            }
         }
 
-        // 5. Query live OAuth usage endpoint with safe interval (>= 60s) and 429 backoff
+        // 3. Quota resolution: Priority 1 is Live OAuth Usage (and cached live quota)
+        var appliedLiveQuota = false
+
         if let token = fetchKeychainToken() {
             var shouldFetch = false
             let now = Date()
@@ -114,7 +101,10 @@ public final class ClaudeCollector: @unchecked Sendable {
                     Self.cachedLiveUsageDate = Date()
                     Self.rateLimitBackoffUntil = .distantPast
                     Self.lock.unlock()
+
                     applyLiveUsageJson(liveUsage, to: &status)
+                    saveDiskCache(status: status)
+                    appliedLiveQuota = true
                 } else {
                     Self.lock.lock()
                     if fetchResult.statusCode == 429 {
@@ -124,26 +114,49 @@ public final class ClaudeCollector: @unchecked Sendable {
                         Self.rateLimitBackoffUntil = Date().addingTimeInterval(30.0)
                     }
                     Self.lock.unlock()
-                    // If local files had no rate limit numbers at all, use cached as last resort
-                    if status.fiveHourRemainingPct == nil, let cached = cached {
+
+                    // Fallback to in-memory cached live usage or disk cache
+                    if let cached = cached {
                         applyLiveUsageJson(cached, to: &status)
+                        appliedLiveQuota = true
+                    } else if let disk = loadDiskCache() {
+                        applyDiskCache(disk, to: &status)
+                        appliedLiveQuota = true
                     }
                 }
-            } else if status.fiveHourRemainingPct == nil, let cached = cached {
-                // Not due for a fetch and local files had no rate limits: use cached as fallback
+            } else if let cached = cached {
+                // Not due for network fetch: apply our in-memory live usage
                 applyLiveUsageJson(cached, to: &status)
+                appliedLiveQuota = true
+            } else if let disk = loadDiskCache() {
+                // Cold start: load persisted disk cache
+                applyDiskCache(disk, to: &status)
+                appliedLiveQuota = true
+            }
+        }
+
+        // 4. Fallback to local files ONLY if no live/cached OAuth quota could be resolved
+        if !appliedLiveQuota {
+            // Check statusline rate limits if the file is fresh (< 30 minutes old)
+            if Date().timeIntervalSince(statuslineModDate) < 1800,
+               let slJson = statuslineData,
+               let rateLimits = slJson["rate_limits"] as? [String: Any] {
+                applyStatuslineRateLimits(rateLimits, to: &status)
             }
 
-            // Ensure remainingDollars is filled if missing from statusline
-            if status.remainingDollars == nil, let cached = cached {
-                if let iguana = cached["iguana_necktie"] as? [String: Any],
-                   let rem = (iguana["remaining_dollars"] as? NSNumber)?.doubleValue {
-                    status.remainingDollars = rem
+            // Fallback to ~/.claude.json cachedUsageUtilization if still missing
+            if status.fiveHourRemainingPct == nil {
+                let claudeConfigURL = home.appendingPathComponent(".claude.json")
+                if let configData = try? Data(contentsOf: claudeConfigURL),
+                   let configJson = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
+                   let cachedUsage = configJson["cachedUsageUtilization"] as? [String: Any],
+                   let utilization = cachedUsage["utilization"] as? [String: Any] {
+                    applyLiveUsageJson(utilization, to: &status)
                 }
             }
         }
 
-        // 6. Check if latest assistant turn in transcripts was an active rate limit block
+        // 5. Check recent assistant turn in transcripts for active rate limit block
         if let info = detectExhaustionFromRecentTurn(home: home) {
             status.fiveHourUsedPct = 100.0
             status.fiveHourRemainingPct = 0.0
@@ -157,11 +170,18 @@ public final class ClaudeCollector: @unchecked Sendable {
             }
         }
 
-        // Set default formatted relative reset strings if still not set
-        if status.resetTimeString == nil, let resetsAt = status.fiveHourResetsAt {
-            status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
+        // 6. Dynamic relative reset countdown recalculation
+        if let resetsAt = status.fiveHourResetsAt {
+            if resetsAt.timeIntervalSince(Date()) <= 0 {
+                // 5-hour window expired and refreshed!
+                status.fiveHourUsedPct = 0.0
+                status.fiveHourRemainingPct = 100.0
+                status.resetTimeString = "Resetting"
+            } else {
+                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
+            }
         }
-        if status.sevenDayResetsInString == nil, let resetsAt = status.sevenDayResetsAt {
+        if let resetsAt = status.sevenDayResetsAt {
             status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(resetsAt)
         }
 
@@ -221,6 +241,9 @@ public final class ClaudeCollector: @unchecked Sendable {
 
         guard let latestFile = sorted.first else { return nil }
 
+        let fileModDate = (try? latestFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        guard Date().timeIntervalSince(fileModDate) < 5 * 3600 else { return nil }
+
         guard let fileHandle = try? FileHandle(forReadingFrom: latestFile) else { return nil }
         defer { try? fileHandle.close() }
 
@@ -266,6 +289,10 @@ public final class ClaudeCollector: @unchecked Sendable {
                         }
                     }
 
+                    if let resetsAt = resetsAtDate, resetsAt.timeIntervalSince(Date()) <= 0 {
+                        return nil
+                    }
+
                     return ExhaustionResult(resetText: "Resets soon", resetsAt: resetsAtDate)
                 }
 
@@ -275,6 +302,92 @@ public final class ClaudeCollector: @unchecked Sendable {
         }
 
         return nil
+    }
+
+    private func applyStatuslineRateLimits(_ rateLimits: [String: Any], to status: inout ClaudeStatus) {
+        if let fiveHour = rateLimits["five_hour"] as? [String: Any] {
+            if let usedPct = (fiveHour["used_percentage"] as? NSNumber)?.doubleValue {
+                status.fiveHourUsedPct = usedPct
+                status.fiveHourRemainingPct = max(0, 100.0 - usedPct)
+            }
+            if let resetsAtNum = (fiveHour["resets_at"] as? NSNumber)?.doubleValue {
+                let date = Date(timeIntervalSince1970: resetsAtNum)
+                status.fiveHourResetsAt = date
+                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
+            } else if let resetsAtStr = fiveHour["resets_at"] as? String,
+                      let date = parseISO8601(resetsAtStr) {
+                status.fiveHourResetsAt = date
+                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(date)
+            }
+        }
+
+        if let sevenDay = rateLimits["seven_day"] as? [String: Any] {
+            if let usedPct = (sevenDay["used_percentage"] as? NSNumber)?.doubleValue {
+                status.sevenDayUsedPct = usedPct
+                status.sevenDayRemainingPct = max(0, 100.0 - usedPct)
+            }
+            if let resetsAtNum = (sevenDay["resets_at"] as? NSNumber)?.doubleValue {
+                let date = Date(timeIntervalSince1970: resetsAtNum)
+                status.sevenDayResetsAt = date
+                status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
+            } else if let resetsAtStr = sevenDay["resets_at"] as? String,
+                      let date = parseISO8601(resetsAtStr) {
+                status.sevenDayResetsAt = date
+                status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(date)
+            }
+        }
+    }
+
+    private func saveDiskCache(status: ClaudeStatus) {
+        let url = Self.cacheFileURL
+        let dir = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let record = ClaudeDiskCache(
+            fiveHourUsedPct: status.fiveHourUsedPct,
+            fiveHourRemainingPct: status.fiveHourRemainingPct,
+            fiveHourResetsAt: status.fiveHourResetsAt,
+            sevenDayUsedPct: status.sevenDayUsedPct,
+            sevenDayRemainingPct: status.sevenDayRemainingPct,
+            sevenDayResetsAt: status.sevenDayResetsAt,
+            remainingDollars: status.remainingDollars,
+            updatedAt: Date()
+        )
+        if let data = try? JSONEncoder().encode(record) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    private func loadDiskCache() -> ClaudeDiskCache? {
+        let url = Self.cacheFileURL
+        guard let data = try? Data(contentsOf: url),
+              let cache = try? JSONDecoder().decode(ClaudeDiskCache.self, from: data) else {
+            return nil
+        }
+        return cache
+    }
+
+    private func applyDiskCache(_ cache: ClaudeDiskCache, to status: inout ClaudeStatus) {
+        status.fiveHourUsedPct = cache.fiveHourUsedPct
+        status.fiveHourRemainingPct = cache.fiveHourRemainingPct
+        status.fiveHourResetsAt = cache.fiveHourResetsAt
+        status.sevenDayUsedPct = cache.sevenDayUsedPct
+        status.sevenDayRemainingPct = cache.sevenDayRemainingPct
+        status.sevenDayResetsAt = cache.sevenDayResetsAt
+        status.remainingDollars = cache.remainingDollars
+
+        if let resetsAt = cache.fiveHourResetsAt {
+            if resetsAt.timeIntervalSince(Date()) <= 0 {
+                status.fiveHourUsedPct = 0.0
+                status.fiveHourRemainingPct = 100.0
+                status.resetTimeString = "Resetting"
+            } else {
+                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
+            }
+        }
+        if let resetsAt = cache.sevenDayResetsAt {
+            status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(resetsAt)
+        }
     }
 
     private func formatModelName(_ raw: String) -> String {
