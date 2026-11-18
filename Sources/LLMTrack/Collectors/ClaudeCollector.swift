@@ -16,7 +16,12 @@ public final class ClaudeCollector: @unchecked Sendable {
     private static var rateLimitBackoffUntil: Date = .distantPast
     private static var cachedLiveUsage: [String: Any]? = nil
     private static var cachedLiveUsageDate: Date = .distantPast
+    private static var lastFailureReason: String? = nil
     private static let lock = NSLock()
+
+    /// The usage endpoint 429s with Retry-After: 300 after a handful of calls, so poll gently.
+    private static let livePollInterval: TimeInterval = 180
+    private static let forcedMinGap: TimeInterval = 20
 
     private static var cacheFileURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -72,89 +77,112 @@ public final class ClaudeCollector: @unchecked Sendable {
             }
         }
 
-        // 3. Quota resolution: Priority 1 is Live OAuth Usage (and cached live quota)
+        // 3. Quota resolution: live OAuth usage, falling back to the last good response.
+        //    Every value shown carries `dataAsOf` so the UI can tell live from stale.
         var appliedLiveQuota = false
+        var dataAsOf: Date? = nil
+        let now = Date()
 
-        if let token = fetchKeychainToken() {
-            var shouldFetch = false
-            let now = Date()
-
-            Self.lock.lock()
-            if forceLive {
-                // If user forced refresh, allow it as long as we're not hammering within 3 seconds
-                if now.timeIntervalSince(Self.lastLiveFetchTime) >= 3.0 {
-                    shouldFetch = true
-                    Self.lastLiveFetchTime = now
+        if let creds = fetchKeychainCredentials() {
+            if let exp = creds.expiresAt, exp <= now {
+                // The CLI refreshes this token only when `claude` runs; calling with it just 401s.
+                Self.lock.lock()
+                Self.lastFailureReason = "Token expired"
+                Self.lock.unlock()
+            } else {
+                var shouldFetch = false
+                Self.lock.lock()
+                if now >= Self.rateLimitBackoffUntil {
+                    let minGap = forceLive ? Self.forcedMinGap : Self.livePollInterval
+                    if now.timeIntervalSince(Self.lastLiveFetchTime) >= minGap {
+                        shouldFetch = true
+                        Self.lastLiveFetchTime = now
+                    }
                 }
-            } else if now >= Self.rateLimitBackoffUntil && now.timeIntervalSince(Self.lastLiveFetchTime) >= 60.0 {
-                shouldFetch = true
-                Self.lastLiveFetchTime = now
-            }
-            let cached = Self.cachedLiveUsage
-            Self.lock.unlock()
+                Self.lock.unlock()
 
-            if shouldFetch {
-                let fetchResult = fetchLiveOAuthUsage(token: token)
-                if let liveUsage = fetchResult.json {
+                if shouldFetch {
+                    let fetchResult = fetchLiveOAuthUsage(token: creds.accessToken)
                     Self.lock.lock()
-                    Self.cachedLiveUsage = liveUsage
-                    Self.cachedLiveUsageDate = Date()
-                    Self.rateLimitBackoffUntil = .distantPast
-                    Self.lock.unlock()
-
-                    applyLiveUsageJson(liveUsage, to: &status)
-                    saveDiskCache(status: status)
-                    appliedLiveQuota = true
-                } else {
-                    Self.lock.lock()
-                    if fetchResult.statusCode == 429 {
-                        let retrySec = fetchResult.retryAfter ?? 60.0
-                        Self.rateLimitBackoffUntil = Date().addingTimeInterval(max(30.0, retrySec))
+                    if let liveUsage = fetchResult.json {
+                        Self.cachedLiveUsage = liveUsage
+                        Self.cachedLiveUsageDate = Date()
+                        Self.rateLimitBackoffUntil = .distantPast
+                        Self.lastFailureReason = nil
                     } else {
-                        Self.rateLimitBackoffUntil = Date().addingTimeInterval(30.0)
+                        switch fetchResult.statusCode {
+                        case 429:
+                            Self.lastFailureReason = "Rate limited"
+                            Self.rateLimitBackoffUntil = Date().addingTimeInterval(max(60.0, fetchResult.retryAfter ?? 300.0))
+                        case 401, 403:
+                            Self.lastFailureReason = "Auth failed"
+                            Self.rateLimitBackoffUntil = Date().addingTimeInterval(120.0)
+                        case 0:
+                            Self.lastFailureReason = "Offline"
+                            Self.rateLimitBackoffUntil = Date().addingTimeInterval(30.0)
+                        default:
+                            Self.lastFailureReason = "HTTP \(fetchResult.statusCode)"
+                            Self.rateLimitBackoffUntil = Date().addingTimeInterval(60.0)
+                        }
                     }
                     Self.lock.unlock()
-
-                    // Fallback to in-memory cached live usage or disk cache
-                    if let cached = cached {
-                        applyLiveUsageJson(cached, to: &status)
-                        appliedLiveQuota = true
-                    } else if let disk = loadDiskCache() {
-                        applyDiskCache(disk, to: &status)
-                        appliedLiveQuota = true
-                    }
                 }
-            } else if let cached = cached {
-                // Not due for network fetch: apply our in-memory live usage
-                applyLiveUsageJson(cached, to: &status)
-                appliedLiveQuota = true
-            } else if let disk = loadDiskCache() {
-                // Cold start: load persisted disk cache
-                applyDiskCache(disk, to: &status)
-                appliedLiveQuota = true
             }
+        } else {
+            Self.lock.lock()
+            Self.lastFailureReason = "No Claude login"
+            Self.lock.unlock()
+        }
+
+        Self.lock.lock()
+        let cached = Self.cachedLiveUsage
+        let cachedDate = Self.cachedLiveUsageDate
+        let failureReason = Self.lastFailureReason
+        Self.lock.unlock()
+
+        if let cached = cached {
+            applyLiveUsageJson(cached, to: &status)
+            dataAsOf = cachedDate
+            appliedLiveQuota = true
+            if failureReason == nil, now.timeIntervalSince(cachedDate) < 1 {
+                saveDiskCache(status: status, asOf: cachedDate)
+            }
+        } else if let disk = loadDiskCache() {
+            applyDiskCache(disk, to: &status)
+            dataAsOf = disk.updatedAt
+            appliedLiveQuota = true
         }
 
         // 4. Fallback to local files ONLY if no live/cached OAuth quota could be resolved
         if !appliedLiveQuota {
             // Check statusline rate limits if the file is fresh (< 30 minutes old)
-            if Date().timeIntervalSince(statuslineModDate) < 1800,
+            if now.timeIntervalSince(statuslineModDate) < 1800,
                let slJson = statuslineData,
                let rateLimits = slJson["rate_limits"] as? [String: Any] {
                 applyStatuslineRateLimits(rateLimits, to: &status)
+                dataAsOf = statuslineModDate
             }
 
-            // Fallback to ~/.claude.json cachedUsageUtilization if still missing
+            // Fallback to ~/.claude.json cachedUsageUtilization, but only if it is recent:
+            // it can be weeks old and would otherwise show a long-gone window as live.
             if status.fiveHourRemainingPct == nil {
                 let claudeConfigURL = home.appendingPathComponent(".claude.json")
                 if let configData = try? Data(contentsOf: claudeConfigURL),
                    let configJson = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
                    let cachedUsage = configJson["cachedUsageUtilization"] as? [String: Any],
+                   let fetchedAtMs = (cachedUsage["fetchedAtMs"] as? NSNumber)?.doubleValue,
                    let utilization = cachedUsage["utilization"] as? [String: Any] {
-                    applyLiveUsageJson(utilization, to: &status)
+                    let fetchedAt = Date(timeIntervalSince1970: fetchedAtMs / 1000.0)
+                    if now.timeIntervalSince(fetchedAt) < 1800 {
+                        applyLiveUsageJson(utilization, to: &status)
+                        dataAsOf = fetchedAt
+                    }
                 }
             }
         }
+
+        status.dataAsOf = dataAsOf
+        status.fetchError = failureReason
 
         // 5. Check recent assistant turn in transcripts for active rate limit block
         if let info = detectExhaustionFromRecentTurn(home: home) {
@@ -170,19 +198,32 @@ public final class ClaudeCollector: @unchecked Sendable {
             }
         }
 
-        // 6. Dynamic relative reset countdown recalculation
+        // 6. Reset handling. If a window's reset time has passed and our data predates it,
+        //    we do NOT know the new window's usage: show it as unknown, never as 100% left.
+        let asOf = status.dataAsOf ?? .distantPast
         if let resetsAt = status.fiveHourResetsAt {
-            if resetsAt.timeIntervalSince(Date()) <= 0 {
-                // 5-hour window expired and refreshed!
-                status.fiveHourUsedPct = 0.0
-                status.fiveHourRemainingPct = 100.0
-                status.resetTimeString = "Resetting"
+            if resetsAt <= now {
+                if asOf < resetsAt {
+                    status.fiveHourUsedPct = nil
+                    status.fiveHourRemainingPct = nil
+                }
+                status.fiveHourResetsAt = nil
+                status.resetTimeString = "Window reset"
             } else {
                 status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
             }
         }
         if let resetsAt = status.sevenDayResetsAt {
-            status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(resetsAt)
+            if resetsAt <= now {
+                if asOf < resetsAt {
+                    status.sevenDayUsedPct = nil
+                    status.sevenDayRemainingPct = nil
+                }
+                status.sevenDayResetsAt = nil
+                status.sevenDayResetsInString = "Window reset"
+            } else {
+                status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(resetsAt)
+            }
         }
 
         status.lastUpdated = Date()
@@ -338,7 +379,7 @@ public final class ClaudeCollector: @unchecked Sendable {
         }
     }
 
-    private func saveDiskCache(status: ClaudeStatus) {
+    private func saveDiskCache(status: ClaudeStatus, asOf: Date) {
         let url = Self.cacheFileURL
         let dir = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -351,7 +392,7 @@ public final class ClaudeCollector: @unchecked Sendable {
             sevenDayRemainingPct: status.sevenDayRemainingPct,
             sevenDayResetsAt: status.sevenDayResetsAt,
             remainingDollars: status.remainingDollars,
-            updatedAt: Date()
+            updatedAt: asOf
         )
         if let data = try? JSONEncoder().encode(record) {
             try? data.write(to: url, options: .atomic)
@@ -375,19 +416,7 @@ public final class ClaudeCollector: @unchecked Sendable {
         status.sevenDayRemainingPct = cache.sevenDayRemainingPct
         status.sevenDayResetsAt = cache.sevenDayResetsAt
         status.remainingDollars = cache.remainingDollars
-
-        if let resetsAt = cache.fiveHourResetsAt {
-            if resetsAt.timeIntervalSince(Date()) <= 0 {
-                status.fiveHourUsedPct = 0.0
-                status.fiveHourRemainingPct = 100.0
-                status.resetTimeString = "Resetting"
-            } else {
-                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
-            }
-        }
-        if let resetsAt = cache.sevenDayResetsAt {
-            status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(resetsAt)
-        }
+        // Reset/countdown handling happens once, in collect() step 6, using updatedAt.
     }
 
     private func formatModelName(_ raw: String) -> String {
@@ -442,7 +471,12 @@ public final class ClaudeCollector: @unchecked Sendable {
         }
     }
 
-    private func fetchKeychainToken() -> String? {
+    private struct KeychainCredentials {
+        let accessToken: String
+        let expiresAt: Date?
+    }
+
+    private func fetchKeychainCredentials() -> KeychainCredentials? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
@@ -460,7 +494,8 @@ public final class ClaudeCollector: @unchecked Sendable {
                   let token = oauth["accessToken"] as? String else {
                 return nil
             }
-            return token
+            let expiresAt = (oauth["expiresAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000.0) }
+            return KeychainCredentials(accessToken: token, expiresAt: expiresAt)
         } catch {
             return nil
         }

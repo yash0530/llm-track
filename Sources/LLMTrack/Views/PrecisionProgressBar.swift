@@ -3,22 +3,28 @@ import SwiftUI
 public struct PrecisionProgressBar: View {
     public let label: String
     public let remainingPercent: Double
+    /// False when usage is unknown (e.g. window reset but no fresh data yet): renders "—" and an empty bar.
+    public let isKnown: Bool
     public let resetText: String?
     public let baseTint: Color
 
     public init(
         label: String,
-        remainingPercent: Double,
+        remainingPercent: Double?,
         resetText: String? = nil,
         baseTint: Color = .blue
     ) {
         self.label = label
-        self.remainingPercent = max(0, min(100, remainingPercent))
+        self.isKnown = remainingPercent != nil
+        self.remainingPercent = max(0, min(100, remainingPercent ?? 0))
         self.resetText = resetText
         self.baseTint = baseTint
     }
 
     private var percentTextColor: Color {
+        if !isKnown {
+            return Color.secondary.opacity(0.60)
+        }
         if remainingPercent <= 0.001 {
             return Color(red: 0.92, green: 0.32, blue: 0.28)
         } else if remainingPercent < 20.0 {
@@ -58,7 +64,7 @@ public struct PrecisionProgressBar: View {
                 Spacer()
 
                 HStack(spacing: 3.5) {
-                    Text(String(format: "%.0f%% left", remainingPercent))
+                    Text(isKnown ? String(format: "%.0f%% left", remainingPercent) : "— left")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .monospacedDigit()
                         .foregroundColor(percentTextColor)
@@ -81,7 +87,7 @@ public struct PrecisionProgressBar: View {
                         .fill(Color.primary.opacity(0.07))
                         .frame(height: 3.5)
 
-                    if remainingPercent > 0.001 {
+                    if isKnown && remainingPercent > 0.001 {
                         Capsule()
                             .fill(barGradient)
                             .frame(width: max(3.5, geo.size.width * CGFloat(remainingPercent / 100.0)), height: 3.5)

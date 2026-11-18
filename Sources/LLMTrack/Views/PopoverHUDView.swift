@@ -60,25 +60,29 @@ public struct PopoverHUDView: View {
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundColor(.primary.opacity(0.92))
                         Spacer()
+                        if let stale = store.telemetry.claude.staleLabel {
+                            Text(stale)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundColor(.orange.opacity(0.90))
+                                .lineLimit(1)
+                        }
                     }
 
                     // Session Limit (5-Hour) -> Resets in Xh Ym
                     PrecisionProgressBar(
                         label: "Session",
-                        remainingPercent: store.telemetry.claude.fiveHourRemainingPct ?? 0,
+                        remainingPercent: store.telemetry.claude.fiveHourRemainingPct,
                         resetText: store.telemetry.claude.resetsInString,
                         baseTint: Color(red: 0.65, green: 0.40, blue: 0.95)
                     )
 
                     // Weekly Limit -> Resets in Xd Yh
-                    if let weeklyRem = store.telemetry.claude.sevenDayRemainingPct {
-                        PrecisionProgressBar(
-                            label: "Weekly",
-                            remainingPercent: weeklyRem,
-                            resetText: store.telemetry.claude.weeklyResetsInString,
-                            baseTint: Color(red: 0.38, green: 0.42, blue: 0.95)
-                        )
-                    }
+                    PrecisionProgressBar(
+                        label: "Weekly",
+                        remainingPercent: store.telemetry.claude.sevenDayRemainingPct,
+                        resetText: store.telemetry.claude.weeklyResetsInString,
+                        baseTint: Color(red: 0.38, green: 0.42, blue: 0.95)
+                    )
 
                     // Extra credits line
                     if let credits = store.telemetry.claude.remainingDollars {
@@ -179,7 +183,7 @@ public struct PopoverHUDView: View {
 
             // Footer
             HStack {
-                Text("Live · \(timeString(store.telemetry.lastUpdated))")
+                Text("Checked · \(timeString(store.telemetry.lastUpdated))")
                     .font(.system(size: 9.5))
                     .foregroundColor(.secondary.opacity(0.50))
 

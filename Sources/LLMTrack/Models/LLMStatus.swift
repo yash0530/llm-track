@@ -29,6 +29,24 @@ public struct ClaudeStatus: Sendable, Equatable {
     public var sevenDayResetsInString: String?
     public var remainingDollars: Double?
     public var lastUpdated: Date?
+    /// When the quota numbers shown were actually fetched (nil = unknown / no data).
+    public var dataAsOf: Date?
+    /// Why the latest live fetch failed (nil = last attempt succeeded).
+    public var fetchError: String?
+
+    /// Data older than this is flagged as stale in the UI.
+    public static let staleAfter: TimeInterval = 10 * 60
+
+    /// Short label shown when the numbers can't be trusted as live, e.g. "Token expired · 3:12 PM".
+    public var staleLabel: String? {
+        let isOld = dataAsOf.map { Date().timeIntervalSince($0) > Self.staleAfter } ?? true
+        guard fetchError != nil || isOld else { return nil }
+        let reason = fetchError ?? "Stale"
+        guard let asOf = dataAsOf else { return "\(reason) · no data" }
+        let f = DateFormatter()
+        f.dateFormat = Calendar.current.isDateInToday(asOf) ? "h:mm a" : "MMM d h:mm a"
+        return "\(reason) · \(f.string(from: asOf))"
+    }
 
     public var isExhausted: Bool {
         if let rem = fiveHourRemainingPct {
@@ -89,7 +107,9 @@ public struct ClaudeStatus: Sendable, Equatable {
         sevenDayResetsAt: Date? = nil,
         sevenDayResetsInString: String? = nil,
         remainingDollars: Double? = nil,
-        lastUpdated: Date? = nil
+        lastUpdated: Date? = nil,
+        dataAsOf: Date? = nil,
+        fetchError: String? = nil
     ) {
         self.process = process
         self.model = model
@@ -103,6 +123,8 @@ public struct ClaudeStatus: Sendable, Equatable {
         self.sevenDayResetsInString = sevenDayResetsInString
         self.remainingDollars = remainingDollars
         self.lastUpdated = lastUpdated
+        self.dataAsOf = dataAsOf
+        self.fetchError = fetchError
     }
 }
 
