@@ -17,6 +17,10 @@ public final class ClaudeCollector: @unchecked Sendable {
     private static var cachedLiveUsage: [String: Any]? = nil
     private static var cachedLiveUsageDate: Date = .distantPast
     private static var lastFailureReason: String? = nil
+    private static var lastFetchWasAuthFailure = false
+    private static var lastCLIRefreshAttempt: Date = .distantPast
+    /// At most one `claude -p /usage` token refresh per 10 minutes.
+    private static let cliRefreshMinGap: TimeInterval = 600
     private static let lock = NSLock()
 
     /// The usage endpoint 429s with Retry-After: 300 after a handful of calls, so poll gently.
@@ -83,7 +87,24 @@ public final class ClaudeCollector: @unchecked Sendable {
         var dataAsOf: Date? = nil
         let now = Date()
 
-        if let creds = fetchKeychainCredentials() {
+        var creds = fetchKeychainCredentials()
+        let tokenExpired = creds?.expiresAt.map { $0 <= now } ?? false
+        Self.lock.lock()
+        let wantsRefresh = (tokenExpired || Self.lastFetchWasAuthFailure)
+            && now.timeIntervalSince(Self.lastCLIRefreshAttempt) >= Self.cliRefreshMinGap
+        if wantsRefresh { Self.lastCLIRefreshAttempt = now }
+        Self.lock.unlock()
+        if wantsRefresh, refreshTokenViaCLI() {
+            // The CLI rewrote the keychain entry; re-read it and fetch right away.
+            creds = fetchKeychainCredentials()
+            Self.lock.lock()
+            Self.lastFetchWasAuthFailure = false
+            Self.rateLimitBackoffUntil = .distantPast
+            Self.lastLiveFetchTime = .distantPast
+            Self.lock.unlock()
+        }
+
+        if let creds = creds {
             if let exp = creds.expiresAt, exp <= now {
                 // The CLI refreshes this token only when `claude` runs; calling with it just 401s.
                 Self.lock.lock()
@@ -109,6 +130,7 @@ public final class ClaudeCollector: @unchecked Sendable {
                         Self.cachedLiveUsageDate = Date()
                         Self.rateLimitBackoffUntil = .distantPast
                         Self.lastFailureReason = nil
+                        Self.lastFetchWasAuthFailure = false
                     } else {
                         switch fetchResult.statusCode {
                         case 429:
@@ -116,6 +138,7 @@ public final class ClaudeCollector: @unchecked Sendable {
                             Self.rateLimitBackoffUntil = Date().addingTimeInterval(max(60.0, fetchResult.retryAfter ?? 300.0))
                         case 401, 403:
                             Self.lastFailureReason = "Auth failed"
+                            Self.lastFetchWasAuthFailure = true
                             Self.rateLimitBackoffUntil = Date().addingTimeInterval(120.0)
                         case 0:
                             Self.lastFailureReason = "Offline"
@@ -198,32 +221,40 @@ public final class ClaudeCollector: @unchecked Sendable {
             }
         }
 
-        // 6. Reset handling. If a window's reset time has passed and our data predates it,
-        //    we do NOT know the new window's usage: show it as unknown, never as 100% left.
+        // 6. Reset handling. A window's usage is unknown (never "100% left") when:
+        //    - its reset time passed and our data predates the reset, or
+        //    - the API gave no reset time (window not started yet) and the data is stale:
+        //      any usage since then started a new window we know nothing about, or
+        //    - the data is older than the window itself.
         let asOf = status.dataAsOf ?? .distantPast
-        if let resetsAt = status.fiveHourResetsAt {
-            if resetsAt <= now {
-                if asOf < resetsAt {
-                    status.fiveHourUsedPct = nil
-                    status.fiveHourRemainingPct = nil
-                }
-                status.fiveHourResetsAt = nil
-                status.resetTimeString = "Window reset"
-            } else {
-                status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
-            }
+        let age = now.timeIntervalSince(asOf)
+        let isStale = age > ClaudeStatus.staleAfter
+        func windowUnknown(resetsAt: Date?, length: TimeInterval) -> Bool {
+            if age > length { return true }
+            if let r = resetsAt { return r <= now && asOf < r }
+            return isStale
         }
-        if let resetsAt = status.sevenDayResetsAt {
-            if resetsAt <= now {
-                if asOf < resetsAt {
-                    status.sevenDayUsedPct = nil
-                    status.sevenDayRemainingPct = nil
-                }
-                status.sevenDayResetsAt = nil
-                status.sevenDayResetsInString = "Window reset"
-            } else {
-                status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(resetsAt)
-            }
+        if windowUnknown(resetsAt: status.fiveHourResetsAt, length: 5 * 3600) {
+            status.fiveHourUsedPct = nil
+            status.fiveHourRemainingPct = nil
+        }
+        if let resetsAt = status.fiveHourResetsAt, resetsAt <= now {
+            status.fiveHourResetsAt = nil
+            status.resetTimeString = "Window reset"
+        } else if let resetsAt = status.fiveHourResetsAt {
+            status.resetTimeString = ClaudeStatus.formatRelativeCountdown(resetsAt)
+        } else if status.fiveHourRemainingPct == nil {
+            status.resetTimeString = nil
+        }
+        if windowUnknown(resetsAt: status.sevenDayResetsAt, length: 7 * 86400) {
+            status.sevenDayUsedPct = nil
+            status.sevenDayRemainingPct = nil
+        }
+        if let resetsAt = status.sevenDayResetsAt, resetsAt <= now {
+            status.sevenDayResetsAt = nil
+            status.sevenDayResetsInString = "Window reset"
+        } else if let resetsAt = status.sevenDayResetsAt {
+            status.sevenDayResetsInString = ClaudeStatus.formatRelativeCountdown(resetsAt)
         }
 
         status.lastUpdated = Date()
@@ -469,6 +500,50 @@ public final class ClaudeCollector: @unchecked Sendable {
            let rem = (iguana["remaining_dollars"] as? NSNumber)?.doubleValue {
             status.remainingDollars = rem
         }
+    }
+
+    /// The keychain OAuth token is only refreshed by the Claude Code CLI, and Desktop-app
+    /// sessions never touch it, so it goes stale after ~8h. `claude -p /usage` is a local
+    /// slash command: it refreshes and rewrites the token through the CLI's own logic and
+    /// makes no model call (0 tokens), so this never consumes quota or rotates tokens behind
+    /// the CLI's back.
+    private func refreshTokenViaCLI() -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            home.appendingPathComponent(".local/bin/claude").path,
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ]
+        guard let cli = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return false
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = ["-p", "/usage", "--output-format", "json",
+                             "--no-session-persistence", "--strict-mcp-config"]
+        var env = ProcessInfo.processInfo.environment
+        for key in env.keys where key == "CLAUDECODE" || key.hasPrefix("CLAUDE_CODE_") || key == "ANTHROPIC_BASE_URL" {
+            env.removeValue(forKey: key)
+        }
+        process.environment = env
+        let workDir = home.appendingPathComponent(".config/llm-track", isDirectory: true)
+        try? FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        process.currentDirectoryURL = workDir
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do { try process.run() } catch { return false }
+        let deadline = Date().addingTimeInterval(20)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        if process.isRunning {
+            process.terminate()
+            return false
+        }
+        return process.terminationStatus == 0
     }
 
     private struct KeychainCredentials {
