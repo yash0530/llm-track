@@ -44,7 +44,7 @@ public final class AGYCollector: @unchecked Sendable {
     private static let staleInterval: TimeInterval = 3
     /// Minimum gap between headless `language_server` fallback spawns (the expensive path),
     /// used only when the direct API path is unavailable (e.g. expired token).
-    private static let headlessRetryInterval: TimeInterval = 60
+    private static let headlessRetryInterval: TimeInterval = 300
 
     private static let cloudCodeBase = "https://daily-cloudcode-pa.googleapis.com/v1internal:"
     private static var cachedProjectId: String? = nil
@@ -58,6 +58,10 @@ public final class AGYCollector: @unchecked Sendable {
 
     private static let languageServerPath = "/Applications/Antigravity.app/Contents/Resources/bin/language_server"
     private static let quotaPath = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
+    /// Isolated app_data_dir under ~/.gemini so the temporary headless server NEVER opens the
+    /// live `~/.gemini/antigravity` directory (doing so triggers startup reconciliation that
+    /// cancels in-flight tool steps in active Antigravity conversations).
+    private static let isolatedAppDataDir = "antigravity-llmtrack"
 
     public init() {
         _ = Self.reapOrphansOnce
@@ -244,24 +248,30 @@ public final class AGYCollector: @unchecked Sendable {
         var json: [String: Any]?
     }
 
-    private static var tokenFileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".gemini/antigravity-cli/antigravity-oauth-token")
+    private static var tokenFileURLs: [URL] {
+        let geminiDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini", isDirectory: true)
+        return [
+            geminiDir.appendingPathComponent("jetski-standalone-oauth-token"),
+            geminiDir.appendingPathComponent("antigravity-cli/antigravity-oauth-token"),
+        ]
     }
 
-    /// Reads the agy CLI's OAuth access token (read-only). Returns nil if missing or about to expire;
-    /// the CLI itself is responsible for refreshing it.
+    /// Reads an OAuth access token (read-only) from standalone or CLI token files.
+    /// Returns nil if missing or about to expire; the CLI/app is responsible for refreshing it.
     private func readAccessToken() -> String? {
-        guard let data = try? Data(contentsOf: Self.tokenFileURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = json["token"] as? [String: Any],
-              let access = token["access_token"] as? String, !access.isEmpty else { return nil }
-        if let expiry = token["expiry"] as? String,
-           let date = Self.parseISO(expiry),
-           date.timeIntervalSinceNow < 60 {
-            return nil
+        for url in Self.tokenFileURLs {
+            guard let data = try? Data(contentsOf: url),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let token = json["token"] as? [String: Any],
+                  let access = token["access_token"] as? String, !access.isEmpty else { continue }
+            if let expiry = token["expiry"] as? String,
+               let date = Self.parseISO(expiry),
+               date.timeIntervalSinceNow < 60 {
+                continue
+            }
+            return access
         }
-        return access
+        return nil
     }
 
     private func postJSON(method: String, body: [String: Any], token: String) -> HTTPResult? {
@@ -441,7 +451,7 @@ public final class AGYCollector: @unchecked Sendable {
             "--override_user_agent_name", "antigravity",
             "--https_server_port", String(port),
             "--csrf_token", csrf,
-            "--app_data_dir", "antigravity",
+            "--app_data_dir", Self.isolatedAppDataDir,
             "--api_server_url", "https://generativelanguage.googleapis.com",
             "--cloud_code_endpoint", "https://daily-cloudcode-pa.googleapis.com"
         ]
